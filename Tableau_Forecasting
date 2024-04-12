@@ -1,21 +1,5 @@
 SCRIPT_REAL('
-import pandas as pd
-from statsmodels.tsa.arima.model import ARIMA
-
-# Prepare the data
-data = pd.DataFrame({
-    "date": pd.to_datetime(_arg1),
-    "metric": _arg2
-})
-data.set_index("date", inplace=True)
-
-# Fit the ARIMA model (adjust p, d, q as needed)
-model = ARIMA(data["metric"], order=(5,1,0))  # Example: order=(p,d,q)
-results = model.fit()
-
-# Forecast future values, adjust periods as needed
-forecast = results.forecast(steps=30)  # Predicts 30 future points
-
-return forecast.tolist()
+    # This Python function receives a list of numbers and returns their sum
+    return sum(_arg1)
 ',
-ATTR([Date]), SUM([Metric]))
+SUM([Your Field Name]))
