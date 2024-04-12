@@ -1,7 +1,13 @@
 SCRIPT_REAL('
-    # This Python script returns a list of the same static value
-    # The length of the list is determined by the length of the input list _arg1,
-    # which is used here just to define how many times to repeat the static value.
-    return [100.0] * len(_arg1)
+import logging
+logging.basicConfig(filename="/path/to/logfile.log", level=logging.DEBUG)
+logging.info("Starting script with input data: " + str(_arg1))
+try:
+    result = sum(_arg1)  # Assuming _arg1 is a list of numbers
+    logging.info("Calculated result: " + str(result))
+    return result
+except Exception as e:
+    logging.error("Failed to execute script: " + str(e))
+    return str(e)  # Returning error as string for debugging (Note: This will cause an error in Tableau if using SCRIPT_REAL)
 ',
-[Some Field])  # Replace [Some Field] with a real field from your data source
+SUM([Your Field]))
