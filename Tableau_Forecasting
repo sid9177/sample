@@ -1,9 +1,9 @@
-SCRIPT_REAL('
-import traceback
-try:
-    result = sum(_arg1)  # Assuming _arg1 is a list of numbers
-    return result
-except Exception as e:
-    return str(e) + "\\n" + traceback.format_exc()  # Returning error as string for debugging
-',
-SUM([Your Field]))
+[TabPy]
+# Set the port TabPy server will listen on
+TABPY_PORT = 9004
+
+# Specify the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+TABPY_LOG_LEVEL = INFO
+
+# Log file path
+TABPY_LOG_DETAILS_FILE_PATH = /path/to/your/logfile.txt
