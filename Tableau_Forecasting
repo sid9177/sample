@@ -1,5 +1,13 @@
 SCRIPT_REAL('
-    # This Python function receives a list of numbers and returns their sum
-    return sum(_arg1)
+import logging
+logging.basicConfig(filename="/path/to/logfile.log", level=logging.DEBUG)
+logging.info("Starting script with input data: " + str(_arg1))
+try:
+    result = sum(_arg1)  # Assuming _arg1 is a list of numbers
+    logging.info("Calculated result: " + str(result))
+    return result
+except Exception as e:
+    logging.error("Failed to execute script: " + str(e))
+    return str(e)  # Returning error as string for debugging (Note: This will cause an error in Tableau if using SCRIPT_REAL)
 ',
-SUM([Your Field Name]))
+SUM([Your Field]))
