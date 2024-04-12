@@ -1,13 +1,9 @@
 SCRIPT_REAL('
-import logging
-logging.basicConfig(filename="/path/to/logfile.log", level=logging.DEBUG)
-logging.info("Starting script with input data: " + str(_arg1))
+import traceback
 try:
     result = sum(_arg1)  # Assuming _arg1 is a list of numbers
-    logging.info("Calculated result: " + str(result))
     return result
 except Exception as e:
-    logging.error("Failed to execute script: " + str(e))
-    return str(e)  # Returning error as string for debugging (Note: This will cause an error in Tableau if using SCRIPT_REAL)
+    return str(e) + "\\n" + traceback.format_exc()  # Returning error as string for debugging
 ',
 SUM([Your Field]))
