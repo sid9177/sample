@@ -1,7 +1,18 @@
-SCRIPT_REAL('
-    # This Python script returns a list of the same static value
-    # The length of the list is determined by the length of the input list _arg1,
-    # which is used here just to define how many times to repeat the static value.
-    return [100.0] * len(_arg1)
-',
-[Some Field])  # Replace [Some Field] with a real field from your data source
+SCRIPT_REAL("
+import pandas as pd
+import numpy as np
+from statsmodels.tsa.arima_model import ARIMA
+
+# Prepare your data
+dates = pd.to_datetime(_arg1)
+values = _arg2
+
+# Fit the ARIMA model
+model = ARIMA(values, order=(5,1,0))
+model_fit = model.fit(disp=0)
+
+# Forecast
+forecast = model_fit.forecast(steps=5)[0]
+
+return list(forecast)
+", ATTR([Date Field]), SUM([Value Field]))
