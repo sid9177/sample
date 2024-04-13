@@ -1,18 +1,26 @@
-SCRIPT_REAL("
 import pandas as pd
-import numpy as np
-from statsmodels.tsa.arima_model import ARIMA
+from statsmodels.tsa.arima.model import ARIMA
 
-# Prepare your data
-dates = pd.to_datetime(_arg1)
-values = _arg2
+# Receiving the arguments from Tableau
+dates = _arg1
+passeng = _arg2
+months_forecast = min(_arg3)
+
+# Creating and preparing the dataframe
+df = pd.DataFrame({"Month": dates, "Passengers": passeng})
+df["Month"] = pd.to_datetime(df["Month"], format="%Y-%m")
+df.set_index("Month", inplace=True)
 
 # Fit the ARIMA model
-model = ARIMA(values, order=(5,1,0))
-model_fit = model.fit(disp=0)
+model = ARIMA(df, order=(1, 1, 1)).fit()  # Example order, adjust based on your data analysis
 
-# Forecast
-forecast = model_fit.forecast(steps=5)[0]
+# Fetching actual data
+actual = pd.Series(list(df["Passengers"].values))
 
-return list(forecast)
-", ATTR([Date Field]), SUM([Value Field]))
+# Forecasting future data if required
+if months_forecast > 0:
+    forecast = model.forecast(steps=months_forecast)
+    forecast = forecast.apply(lambda x: 0 if x < 0 else x)  # Ensuring non-negative forecasts
+    return list(pd.concat([actual, forecast]))[-1 * len(df):]
+else:
+    return list(actual)
