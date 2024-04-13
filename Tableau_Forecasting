@@ -2,30 +2,61 @@ SCRIPT_REAL(
 '
 import pandas as pd
 from statsmodels.tsa.arima.model import ARIMA
+from sklearn.metrics import mean_squared_error
+import numpy as np
 
-# Receiving the arguments from Tableau
-dates = _arg1
-passeng = _arg2
-months_forecast = min(_arg3)
+# Example data setup
+dates = _arg1  # Dates array
+passeng = _arg2  # Passengers array
+months_forecast = min(_arg3)  # Months to forecast
 
-# Creating and preparing the dataframe
 df = pd.DataFrame({"Month": dates, "Passengers": passeng})
 df["Month"] = pd.to_datetime(df["Month"], format="%Y-%m")
 df.set_index("Month", inplace=True)
 
-# Fit the ARIMA model
-model = ARIMA(df, order=(1, 1, 1)).fit()  # Example order, adjust based on your data analysis
+# Split data into train and test
+train_size = int(len(df) * 0.8)
+train, test = df[0:train_size], df[train_size:len(df)]
 
-# Fetching actual data
-actual = pd.Series(list(df["Passengers"].values))
+# Define the p, d, q ranges to test
+p = range(0, 3)  # Example: 0, 1, 2
+d = range(0, 2)  # Example: 0, 1
+q = range(0, 3)  # Example: 0, 1, 2
 
-# Forecasting future data if required
+best_score, best_cfg = float("inf"), None
+
+# Grid search
+for pi in p:
+    for di in d:
+        for qi in q:
+            order = (pi, di, qi)
+            try:
+                model = ARIMA(train, order=order)
+                model_fit = model.fit()
+                forecast = model_fit.get_forecast(steps=len(test))
+                forecast_values = forecast.summary_frame()['mean']
+                error = mean_squared_error(test['Passengers'], forecast_values)
+                if error < best_score:
+                    best_score, best_cfg = error, order
+                print('ARIMA%s RMSE=%.3f' % (order, np.sqrt(error)))
+            except:
+                continue
+
+print('Best ARIMA%s RMSE=%.3f' % (best_cfg, np.sqrt(best_score)))
+
+# Fit the best model
+model = ARIMA(df, order=best_cfg)
+fitted_model = model.fit()
+
+# Forecast if needed
 if months_forecast > 0:
-    forecast = model.forecast(steps=months_forecast)
-    forecast = forecast.apply(lambda x: 0 if x < 0 else x)  # Ensuring non-negative forecasts
-    return list(pd.concat([actual, forecast]))[-1 * len(df):]
+    forecast = fitted_model.get_forecast(steps=months_forecast)
+    forecast_values = forecast.summary_frame()['mean']
+    forecast_values = forecast_values.apply(lambda x: max(x, 0))  # Ensure non-negative forecasts
+    results = list(train['Passengers']) + forecast_values.tolist()
+    return results[-len(df):]
 else:
-    return list(actual)
+    return list(train['Passengers'])
 ',
 ATTR([Month]), ATTR([#Passengers]), MIN([Months Forecast])
 )
