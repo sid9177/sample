@@ -1,3 +1,5 @@
+SCRIPT_REAL(
+'
 import pandas as pd
 from statsmodels.tsa.arima.model import ARIMA
 
@@ -24,3 +26,6 @@ if months_forecast > 0:
     return list(pd.concat([actual, forecast]))[-1 * len(df):]
 else:
     return list(actual)
+',
+ATTR([Month]), ATTR([#Passengers]), MIN([Months Forecast])
+)
