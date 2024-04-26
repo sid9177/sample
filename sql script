@@ -1,21 +1,25 @@
 SELECT
-    dashboards.name AS dashboard_name,
-    views.name AS view_name,
-    workbooks.name AS workbook_name,
-    projects.name AS project_name,
-    users.name AS user_name,
-    views.total_views
+    v.name AS dashboard_name,
+    COUNT(he.id) AS view_count,
+    w.name AS workbook_name,
+    p.name AS project_name,
+    u.name AS user_name
 FROM
-    _views views
+    historical_events he
 JOIN
-    _workbooks workbooks ON views.workbook_id = workbooks.id
+    historical_event_types het ON he.historical_event_type_id = het.id
 JOIN
-    _dashboards dashboards ON views.id = dashboards.view_id
+    _views v ON he.view_id = v.id
 JOIN
-    _projects projects ON workbooks.project_id = projects.id
+    _workbooks w ON v.workbook_id = w.id
 JOIN
-    _users users ON workbooks.owner_id = users.id
+    _projects p ON w.project_id = p.id
+JOIN
+    _users u ON w.owner_id = u.id
+WHERE
+    het.name = 'view' AND
+    v.sheet_type = 'dashboard'
+GROUP BY
+    v.name, w.name, p.name, u.name
 ORDER BY
-    projects.name,
-    workbooks.name,
-    dashboards.name;
+    p.name, w.name, v.name;
