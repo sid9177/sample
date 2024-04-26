@@ -1,0 +1,21 @@
+SELECT
+    dashboards.name AS dashboard_name,
+    views.name AS view_name,
+    workbooks.name AS workbook_name,
+    projects.name AS project_name,
+    users.name AS user_name,
+    views.total_views
+FROM
+    _views views
+JOIN
+    _workbooks workbooks ON views.workbook_id = workbooks.id
+JOIN
+    _dashboards dashboards ON views.id = dashboards.view_id
+JOIN
+    _projects projects ON workbooks.project_id = projects.id
+JOIN
+    _users users ON workbooks.owner_id = users.id
+ORDER BY
+    projects.name,
+    workbooks.name,
+    dashboards.name;
