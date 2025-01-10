@@ -1,0 +1,107 @@
+import openai
+import streamlit as st
+import pandas as pd
+from PyPDF2 import PdfReader
+from langchain.memory import ConversationBufferMemory
+
+# Azure OpenAI configuration
+AZURE_API_KEY = "your_azure_api_key"
+AZURE_ENDPOINT = "https://your-azure-endpoint.openai.azure.com/"
+AZURE_DEPLOYMENT_NAME = "your-deployment-name"
+AZURE_API_VERSION = "2023-05-15"  # Replace with your desired API version
+
+# Configure the OpenAI client
+openai.api_type = "azure"
+openai.api_key = AZURE_API_KEY
+openai.api_base = AZURE_ENDPOINT
+openai.api_version = AZURE_API_VERSION
+
+def extract_text_from_pdf(pdf_file):
+    """Extract text from an uploaded PDF file."""
+    reader = PdfReader(pdf_file)
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text()
+    return text
+
+st.title("Step-by-Step GenAI Chatbot")
+
+# Step 1: Upload Policy/Procedure Document
+policy_file = st.file_uploader("Step 1: Upload Policy/Procedure Document (PDF)", type=["pdf"])
+if policy_file:
+    policy_text = extract_text_from_pdf(policy_file)
+    st.success("Policy document uploaded and processed.")
+    st.text_area("Policy Content:", policy_text, height=150)
+
+# Step 2: Upload Methodology Document
+if policy_file:
+    methodology_file = st.file_uploader("Step 2: Upload Methodology Document (PDF)", type=["pdf"])
+    if methodology_file:
+        methodology_text = extract_text_from_pdf(methodology_file)
+        st.success("Methodology document uploaded and processed.")
+        st.text_area("Methodology Content:", methodology_text, height=150)
+
+# Step 3: Upload CSV File
+if policy_file and methodology_file:
+    csv_file = st.file_uploader("Step 3: Upload Data (CSV)", type=["csv"])
+    if csv_file:
+        csv_data = pd.read_csv(csv_file)
+        st.success("CSV file uploaded and processed.")
+        st.write("CSV Data Preview:", csv_data.head())
+
+# Initialize Chatbot
+if policy_file and methodology_file and csv_file:
+    st.info("Initializing chatbot with uploaded data...")
+
+    # Combine knowledge
+    combined_knowledge = f"Policy Document:\n{policy_text}\n\n" \
+                         f"Methodology Document:\n{methodology_text}\n\n" \
+                         f"CSV Data Summary:\n{csv_data.describe()}\n"
+
+    # Memory for conversational context
+    memory = ConversationBufferMemory()
+
+    st.success("Chatbot ready! Ask your questions.")
+
+    # Chat Interface
+    user_input = st.text_input("Ask a question:")
+    if user_input:
+        # Prepare prompt with combined knowledge
+        conversation_history = memory.load_memory_variables({}).get('history', '')
+        prompt = f"""
+{conversation_history}
+
+You are an AI assistant. Use the following documents and data to answer the question.
+
+Policy Document:
+{policy_text}
+
+Methodology Document:
+{methodology_text}
+
+CSV Data Insights:
+{csv_data.describe()}
+
+Question:
+{user_input}
+
+Provide a concise and accurate answer based on the inputs.
+"""
+        # Call Azure OpenAI ChatCompletion API
+        response = openai.ChatCompletion.create(
+            engine=AZURE_DEPLOYMENT_NAME,
+            messages=[
+                {"role": "system", "content": "You are an AI assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+            max_tokens=500,
+        )
+        
+        chatbot_response = response['choices'][0]['message']['content']
+
+        # Update memory
+        memory.chat_memory.add_user_message(user_input)
+        memory.chat_memory.add_ai_message(chatbot_response)
+
+        st.write("Chatbot Response:", chatbot_response)
