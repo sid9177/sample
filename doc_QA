@@ -3,24 +3,27 @@ import streamlit as st
 from openai import AzureOpenAI
 import PyPDF2
 import pandas as pd
+import io
 
 # -----------------------------------------------------------------------------
-# 1. AzureOpenAI Client Initialization
+# 1. AzureOpenAI Client
 # -----------------------------------------------------------------------------
-# Provide your real Azure OpenAI credentials here or use environment variables
+# Update with your actual Azure OpenAI config or environment variables
 client = AzureOpenAI(
     api_key=os.environ.get("AZURE_OPENAI_API_KEY", "YOUR_AZURE_OPENAI_API_KEY_HERE"),
     azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT", "https://YOUR_AZURE_OPENAI_ENDPOINT_HERE"),
-    api_version="2024-05-01-preview",  # Example version; update if needed
+    api_version="2024-05-01-preview",  # Example version
 )
+
+# The name of your deployed Azure OpenAI model
+AZURE_DEPLOYMENT_NAME = "Cata-GPT4-o"
 
 
 # -----------------------------------------------------------------------------
 # 2. Helper Functions
 # -----------------------------------------------------------------------------
-
 def extract_text_from_pdf(file) -> str:
-    """Extract all text from a PDF file."""
+    """Extract text from a PDF."""
     pdf_reader = PyPDF2.PdfReader(file)
     all_text = []
     for page in pdf_reader.pages:
@@ -31,7 +34,7 @@ def extract_text_from_pdf(file) -> str:
 
 
 def extract_text_from_excel(file) -> str:
-    """Extract text from all sheets in an Excel file as CSV strings."""
+    """Extract text from all sheets in an Excel file (as CSV strings)."""
     xls = pd.ExcelFile(file)
     excel_text = []
     for sheet_name in xls.sheet_names:
@@ -41,47 +44,48 @@ def extract_text_from_excel(file) -> str:
 
 
 def extract_text_from_csv(file) -> str:
-    """Extract CSV content as a text string."""
+    """Extract CSV content as text."""
     df = pd.read_csv(file)
     return df.to_csv(index=False)
+
+
+def parse_csv_text_to_df(csv_text: str) -> pd.DataFrame:
+    """Convert a CSV text string into a pandas DataFrame."""
+    return pd.read_csv(io.StringIO(csv_text))
 
 
 def chat_with_azure_openai(client, conversation_history, new_user_message):
     """
     Send a chat completion request using the AzureOpenAI client.
-    
-    :param client: The AzureOpenAI client instance.
-    :param conversation_history: A list of (role, content) tuples for the conversation so far.
-    :param new_user_message: The latest user query string.
-    :return: The model's response as a string.
+    Return the assistant's reply as a string.
     """
-    # Build the list of message dicts:
     messages = [{"role": role, "content": content} for (role, content) in conversation_history]
-    # Append the new user message
     messages.append({"role": "user", "content": new_user_message})
 
-    # Create the chat completion
     response = client.create_chat_completion(
-        engine="Cata-GPT4-o",  # or your actual deployment/model name
+        engine=AZURE_DEPLOYMENT_NAME,
         messages=messages,
         temperature=0.7,
     )
-
-    # Extract the assistant's reply
-    assistant_message = response["choices"][0]["message"]["content"]
+    # Correct retrieval of assistant's content
+    assistant_message = response.choices[0].message.content
     return assistant_message
 
 
 # -----------------------------------------------------------------------------
-# 3. Streamlit Application
+# 3. Streamlit App
 # -----------------------------------------------------------------------------
 def main():
-    st.title("GenAI Scorecard Metrics Data QA Chatbot (AzureOpenAI)")
+    st.title("GenAI Scorecard Metrics Data QA Chatbot (with CSV Filter)")
 
-    # Store conversation and file texts in Session State
+    # Initialize session state
     if "conversation_history" not in st.session_state:
         st.session_state.conversation_history = [
-            ("system", "You are a helpful assistant answering questions about the policy, methodology, formulas, and CSV data.")
+            (
+                "system",
+                "You are a helpful assistant that answers questions about the "
+                "scorecard policy, methodology, formulas, and CSV data."
+            )
         ]
 
     if "policy_text" not in st.session_state:
@@ -93,7 +97,11 @@ def main():
     if "csv_text" not in st.session_state:
         st.session_state.csv_text = None
 
-    # Step 1: Upload Policy PDF
+    # We'll also store a filtered version of the CSV
+    if "filtered_csv_text" not in st.session_state:
+        st.session_state.filtered_csv_text = None
+
+    # Step 1: Policy PDF
     if not st.session_state.policy_text:
         st.subheader("Step 1: Upload Policy PDF")
         policy_file = st.file_uploader("Upload Policy PDF", type=["pdf"], key="policy_file")
@@ -104,7 +112,7 @@ def main():
         else:
             st.stop()
 
-    # Step 2: Upload Methodology PDF
+    # Step 2: Methodology PDF
     if not st.session_state.methodology_text:
         st.subheader("Step 2: Upload Methodology PDF")
         methodology_file = st.file_uploader("Upload Methodology PDF", type=["pdf"], key="methodology_file")
@@ -115,7 +123,7 @@ def main():
         else:
             st.stop()
 
-    # Step 3: Upload Formula Excel
+    # Step 3: Formula Excel
     if not st.session_state.formula_text:
         st.subheader("Step 3: Upload Formula Excel")
         formula_file = st.file_uploader("Upload Formula Excel", type=["xls", "xlsx"], key="formula_file")
@@ -126,59 +134,104 @@ def main():
         else:
             st.stop()
 
-    # Step 4: Upload CSV Data
+    # Step 4: CSV file
     if not st.session_state.csv_text:
-        st.subheader("Step 4: Upload CSV file")
-        csv_file = st.file_uploader("Upload CSV Data", type=["csv"], key="csv_file")
+        st.subheader("Step 4: Upload CSV Data")
+        csv_file = st.file_uploader("Upload CSV", type=["csv"], key="csv_file")
         if csv_file is not None:
             st.session_state.csv_text = extract_text_from_csv(csv_file)
-            st.success("CSV uploaded and processed!")
-            st.write("All documents uploaded. Start chatting below.")
+            st.success("CSV data uploaded and processed!")
+            st.write("Proceed to Step 5: Filter Data.")
         else:
             st.stop()
 
-    # Combine all documents into one big reference text
+    # Step 5: Mandatory Filtering
+    if not st.session_state.filtered_csv_text:
+        st.subheader("Step 5: Filter Your Scorecard Data")
+
+        # Convert the CSV text to a DataFrame
+        csv_df = parse_csv_text_to_df(st.session_state.csv_text)
+
+        # Check if the columns exist. Adjust column names as needed.
+        required_columns = ["Scorecard ID", "Scorecard Name", "Scorecard Owner Name"]
+        missing_cols = [col for col in required_columns if col not in csv_df.columns]
+        if missing_cols:
+            st.error(f"CSV missing required columns: {missing_cols}. Please fix your CSV.")
+            st.stop()
+
+        # Let the user pick which field to filter on
+        filter_field = st.selectbox(
+            "Select a filter field",
+            ["Scorecard ID", "Scorecard Name", "Scorecard Owner Name"],
+            index=0
+        )
+
+        # Let the user pick a value from that field
+        unique_values = csv_df[filter_field].dropna().unique()
+        selected_value = st.selectbox(
+            f"Select a value from '{filter_field}'",
+            sorted(unique_values)
+        )
+
+        # Apply the filter
+        if st.button("Apply Filter"):
+            filtered_df = csv_df[csv_df[filter_field] == selected_value]
+            if filtered_df.empty:
+                st.warning("No rows found for the selected filter. Please choose another.")
+                st.stop()
+            else:
+                # Convert back to CSV text
+                st.session_state.filtered_csv_text = filtered_df.to_csv(index=False)
+                st.success(f"Filtered on {filter_field} = {selected_value}")
+                st.write("Proceed to Chat below.")
+                # Optionally display the filtered data
+                st.dataframe(filtered_df)
+        else:
+            st.stop()  # Force user to apply filter before continuing
+
+    # If we reach here, the user has applied the filter
+    # We combine all docs with the filtered CSV text instead of the entire CSV
     combined_documents_text = (
         f"Policy Document:\n{st.session_state.policy_text}\n\n"
         f"Methodology Document:\n{st.session_state.methodology_text}\n\n"
         f"Formula Document:\n{st.session_state.formula_text}\n\n"
-        f"CSV Data:\n{st.session_state.csv_text}"
+        f"Filtered CSV Data:\n{st.session_state.filtered_csv_text}"
     )
 
-    # Update the system message with context
+    # Update the system message
     context_message = (
         "You have the following documents as reference:\n"
         + combined_documents_text
         + "\nAnswer questions based on these documents. "
-          "If unsure and it's not in the documents, say you don't know."
+          "If you're not sure, say you don't know."
     )
-
     st.session_state.conversation_history[0] = (
         "system",
         "You are a helpful assistant with knowledge of the policy, methodology, formulas, and CSV data. "
-        f"Use the following context:\n{context_message}"
+        f"Use this context:\n{context_message}"
     )
 
     # Chat interface
-    st.subheader("Chat with your Scorecard QA Bot")
+    st.subheader("Chat with the Scorecard QA Bot")
 
-    user_input = st.text_input("Ask a question about the policy, methodology, formulas, or the CSV data:")
+    user_input = st.text_input("Ask a question about the policy, methodology, formula, or the filtered CSV:")
     if st.button("Send") and user_input.strip():
         assistant_reply = chat_with_azure_openai(
             client,
             st.session_state.conversation_history,
             user_input
         )
-        # Update session state with the conversation
+        # Store conversation
         st.session_state.conversation_history.append(("user", user_input))
         st.session_state.conversation_history.append(("assistant", assistant_reply))
 
-    # Display conversation history
+    # Display conversation
     for role, content in st.session_state.conversation_history:
         if role == "assistant":
             st.markdown(f"**Assistant**: {content}")
         elif role == "user":
             st.markdown(f"**You**: {content}")
+
 
 if __name__ == "__main__":
     main()
