@@ -1,138 +1,184 @@
-import openai
+import os
 import streamlit as st
+from openai import AzureOpenAI
+import PyPDF2
 import pandas as pd
-from PyPDF2 import PdfReader
-import openpyxl
 
-# Azure OpenAI Configuration
-AZURE_API_KEY = "your_azure_api_key"
-AZURE_ENDPOINT = "https://your-azure-endpoint.openai.azure.com/"
-AZURE_DEPLOYMENT_NAME = "your-deployment-name"
-AZURE_API_VERSION = "2023-05-15"  # Replace with your API version
+# -----------------------------------------------------------------------------
+# 1. AzureOpenAI Client Initialization
+# -----------------------------------------------------------------------------
+# Provide your real Azure OpenAI credentials here or use environment variables
+client = AzureOpenAI(
+    api_key=os.environ.get("AZURE_OPENAI_API_KEY", "YOUR_AZURE_OPENAI_API_KEY_HERE"),
+    azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT", "https://YOUR_AZURE_OPENAI_ENDPOINT_HERE"),
+    api_version="2024-05-01-preview",  # Example version; update if needed
+)
 
-# Configure the Azure OpenAI client
-openai.api_type = "azure"
-openai.api_key = AZURE_API_KEY
-openai.api_base = AZURE_ENDPOINT
-openai.api_version = AZURE_API_VERSION
 
-def extract_text_from_pdf(pdf_file):
-    """Extract text from an uploaded PDF file."""
-    reader = PdfReader(pdf_file)
-    text = ""
-    for page in reader.pages:
-        text += page.extract_text()
-    return text
+# -----------------------------------------------------------------------------
+# 2. Helper Functions
+# -----------------------------------------------------------------------------
 
-def read_formulas_from_excel(excel_file) -> str:
+def extract_text_from_pdf(file) -> str:
+    """Extract all text from a PDF file."""
+    pdf_reader = PyPDF2.PdfReader(file)
+    all_text = []
+    for page in pdf_reader.pages:
+        text = page.extract_text()
+        if text:
+            all_text.append(text)
+    return "\n".join(all_text)
+
+
+def extract_text_from_excel(file) -> str:
+    """Extract text from all sheets in an Excel file as CSV strings."""
+    xls = pd.ExcelFile(file)
+    excel_text = []
+    for sheet_name in xls.sheet_names:
+        df = xls.parse(sheet_name)
+        excel_text.append(df.to_csv(index=False))
+    return "\n".join(excel_text)
+
+
+def extract_text_from_csv(file) -> str:
+    """Extract CSV content as a text string."""
+    df = pd.read_csv(file)
+    return df.to_csv(index=False)
+
+
+def chat_with_azure_openai(client, conversation_history, new_user_message):
     """
-    Read the Excel file using openpyxl and collect formulas as a single string.
-    This function returns all formulas found in each cell of every sheet.
-    """
-    workbook = openpyxl.load_workbook(excel_file, data_only=False)  # data_only=False to get formulas
-    formulas = []
+    Send a chat completion request using the AzureOpenAI client.
     
-    for sheet_name in workbook.sheetnames:
-        sheet = workbook[sheet_name]
-        for row in sheet.iter_rows():
-            for cell in row:
-                # If the cell has a formula, store it
-                if cell.value and isinstance(cell.value, str) and cell.value.startswith('='):
-                    formulas.append(f"Sheet: {sheet_name}, Cell: {cell.coordinate}, Formula: {cell.value}")
-    
-    # Combine everything into a single string
-    if formulas:
-        return "\n".join(formulas)
-    else:
-        return "No formulas found or no formula cells in this file."
+    :param client: The AzureOpenAI client instance.
+    :param conversation_history: A list of (role, content) tuples for the conversation so far.
+    :param new_user_message: The latest user query string.
+    :return: The model's response as a string.
+    """
+    # Build the list of message dicts:
+    messages = [{"role": role, "content": content} for (role, content) in conversation_history]
+    # Append the new user message
+    messages.append({"role": "user", "content": new_user_message})
 
-def query_azure_openai(system_prompt, user_query, deployment_name):
-    """
-    Send messages to Azure OpenAI and get a response.
-    - system_prompt: High-level instructions and data context
-    - user_query: The user's question
-    """
-    response = openai.ChatCompletion.create(
-        engine=deployment_name,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_query},
-        ],
+    # Create the chat completion
+    response = client.create_chat_completion(
+        engine="Cata-GPT4-o",  # or your actual deployment/model name
+        messages=messages,
         temperature=0.7,
-        max_tokens=700,
     )
-    return response["choices"][0]["message"]["content"]
 
-# Streamlit UI
-st.title("GenAI Chatbot with Policy, Methodology, Excel Formulas, and CSV Data")
+    # Extract the assistant's reply
+    assistant_message = response["choices"][0]["message"]["content"]
+    return assistant_message
 
-# Step 1: Upload Policy / Procedure Document (PDF)
-policy_file = st.file_uploader("Step 1: Upload Policy / Procedure Document (PDF)", type=["pdf"])
-if policy_file:
-    policy_text = extract_text_from_pdf(policy_file)
-    st.success("Policy/Procedure PDF uploaded and processed.")
-    st.text_area("Policy Content:", policy_text, height=150)
 
-# Step 2: Upload Methodology Document (PDF)
-if policy_file:
-    methodology_file = st.file_uploader("Step 2: Upload Methodology Document (PDF)", type=["pdf"])
-    if methodology_file:
-        methodology_text = extract_text_from_pdf(methodology_file)
-        st.success("Methodology PDF uploaded and processed.")
-        st.text_area("Methodology Content:", methodology_text, height=150)
+# -----------------------------------------------------------------------------
+# 3. Streamlit Application
+# -----------------------------------------------------------------------------
+def main():
+    st.title("GenAI Scorecard Metrics Data QA Chatbot (AzureOpenAI)")
 
-# Step 3: Upload Excel Formula File
-if policy_file and methodology_file:
-    excel_file = st.file_uploader("Step 3: Upload the Excel File (XLSX) with Formulas", type=["xlsx"])
-    if excel_file:
-        excel_formulas = read_formulas_from_excel(excel_file)
-        st.success("Excel Formula File uploaded and processed.")
-        st.text_area("Excel Formulas Extracted:", excel_formulas, height=150)
+    # Store conversation and file texts in Session State
+    if "conversation_history" not in st.session_state:
+        st.session_state.conversation_history = [
+            ("system", "You are a helpful assistant answering questions about the policy, methodology, formulas, and CSV data.")
+        ]
 
-# Step 4: Upload CSV File
-if policy_file and methodology_file and excel_file:
-    csv_file = st.file_uploader("Step 4: Upload Data (CSV) with Metrics", type=["csv"])
-    if csv_file:
-        csv_data = pd.read_csv(csv_file)
-        st.success("CSV file uploaded and processed.")
-        st.write("CSV Data Preview:", csv_data.head())
+    if "policy_text" not in st.session_state:
+        st.session_state.policy_text = None
+    if "methodology_text" not in st.session_state:
+        st.session_state.methodology_text = None
+    if "formula_text" not in st.session_state:
+        st.session_state.formula_text = None
+    if "csv_text" not in st.session_state:
+        st.session_state.csv_text = None
 
-# Initialize Chatbot once all required files are present
-if policy_file and methodology_file and excel_file and csv_file:
-    st.info("Initializing chatbot with uploaded data...")
+    # Step 1: Upload Policy PDF
+    if not st.session_state.policy_text:
+        st.subheader("Step 1: Upload Policy PDF")
+        policy_file = st.file_uploader("Upload Policy PDF", type=["pdf"], key="policy_file")
+        if policy_file is not None:
+            st.session_state.policy_text = extract_text_from_pdf(policy_file)
+            st.success("Policy PDF uploaded and processed!")
+            st.write("Proceed to Step 2.")
+        else:
+            st.stop()
 
-    # Convert the entire CSV to a string (Note: large CSV can exceed token limit)
-    csv_data_str = csv_data.to_csv(index=False)
+    # Step 2: Upload Methodology PDF
+    if not st.session_state.methodology_text:
+        st.subheader("Step 2: Upload Methodology PDF")
+        methodology_file = st.file_uploader("Upload Methodology PDF", type=["pdf"], key="methodology_file")
+        if methodology_file is not None:
+            st.session_state.methodology_text = extract_text_from_pdf(methodology_file)
+            st.success("Methodology PDF uploaded and processed!")
+            st.write("Proceed to Step 3.")
+        else:
+            st.stop()
 
-    # Combine all knowledge into a single system prompt
-    system_instructions = f"""
-You are an AI assistant with access to the following information:
+    # Step 3: Upload Formula Excel
+    if not st.session_state.formula_text:
+        st.subheader("Step 3: Upload Formula Excel")
+        formula_file = st.file_uploader("Upload Formula Excel", type=["xls", "xlsx"], key="formula_file")
+        if formula_file is not None:
+            st.session_state.formula_text = extract_text_from_excel(formula_file)
+            st.success("Formula Excel uploaded and processed!")
+            st.write("Proceed to Step 4.")
+        else:
+            st.stop()
 
-1. **Policy/Procedure Document**:
-{policy_text}
+    # Step 4: Upload CSV Data
+    if not st.session_state.csv_text:
+        st.subheader("Step 4: Upload CSV file")
+        csv_file = st.file_uploader("Upload CSV Data", type=["csv"], key="csv_file")
+        if csv_file is not None:
+            st.session_state.csv_text = extract_text_from_csv(csv_file)
+            st.success("CSV uploaded and processed!")
+            st.write("All documents uploaded. Start chatting below.")
+        else:
+            st.stop()
 
-2. **Methodology Document**:
-{methodology_text}
+    # Combine all documents into one big reference text
+    combined_documents_text = (
+        f"Policy Document:\n{st.session_state.policy_text}\n\n"
+        f"Methodology Document:\n{st.session_state.methodology_text}\n\n"
+        f"Formula Document:\n{st.session_state.formula_text}\n\n"
+        f"CSV Data:\n{st.session_state.csv_text}"
+    )
 
-3. **Excel Formulas** (from the provided Excel file):
-{excel_formulas}
+    # Update the system message with context
+    context_message = (
+        "You have the following documents as reference:\n"
+        + combined_documents_text
+        + "\nAnswer questions based on these documents. "
+          "If unsure and it's not in the documents, say you don't know."
+    )
 
-4. **CSV File Contents** (the final metrics CSV file):
-{csv_data_str}
+    st.session_state.conversation_history[0] = (
+        "system",
+        "You are a helpful assistant with knowledge of the policy, methodology, formulas, and CSV data. "
+        f"Use the following context:\n{context_message}"
+    )
 
-INSTRUCTIONS:
-- If the user asks about policy or procedure, refer to the Policy/Procedure PDF text.
-- If the user asks about methodology, reference the Methodology PDF text.
-- If the user asks about how the CSV was built or the logic behind it, check the Excel formulas.
-- If the user asks about specific data points or metrics, refer to the CSV data.
-- Combine all sources as needed to provide thorough and concise answers.
-"""
+    # Chat interface
+    st.subheader("Chat with your Scorecard QA Bot")
 
-    st.success("Chatbot ready! Ask your questions below.")
+    user_input = st.text_input("Ask a question about the policy, methodology, formulas, or the CSV data:")
+    if st.button("Send") and user_input.strip():
+        assistant_reply = chat_with_azure_openai(
+            client,
+            st.session_state.conversation_history,
+            user_input
+        )
+        # Update session state with the conversation
+        st.session_state.conversation_history.append(("user", user_input))
+        st.session_state.conversation_history.append(("assistant", assistant_reply))
 
-    # Chat Interface
-    user_input = st.text_input("Ask a question:")
-    if user_input:
-        # Query Azure OpenAI
-        response = query_azure_openai(system_instructions, user_input, AZURE_DEPLOYMENT_NAME)
-        st.write("Chatbot Response:", response)
+    # Display conversation history
+    for role, content in st.session_state.conversation_history:
+        if role == "assistant":
+            st.markdown(f"**Assistant**: {content}")
+        elif role == "user":
+            st.markdown(f"**You**: {content}")
+
+if __name__ == "__main__":
+    main()
