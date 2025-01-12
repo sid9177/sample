@@ -10,8 +10,8 @@ import io
 # ------------------------------
 # 1. Azure & Global Settings
 # ------------------------------
-EMBEDDING_DEPLOYMENT_NAME = "my-embedding-model"  # e.g., "text-embedding-ada-002"
-CHAT_DEPLOYMENT_NAME = "Cata-GPT4-o"              # Your Azure ChatGPT model
+EMBEDDING_MODEL_NAME = "my-embedding-model"  # e.g., "text-embedding-ada-002" or your Azure embedding deployment name
+CHAT_MODEL_NAME = "Cata-GPT4-o"              # Your Azure ChatGPT model deployment name
 API_VERSION = "2024-05-01-preview"
 AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "https://YOUR_AZURE_OPENAI_ENDPOINT_HERE")
 AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_API_KEY", "YOUR_AZURE_OPENAI_API_KEY_HERE")
@@ -74,10 +74,11 @@ def build_faiss_index(embeddings):
     index.add(embs_array)
     return index, dim
 
-def chat_completion_with_context(client, user_query, relevant_chunks):
+
+def chat_completion_with_context(user_query, relevant_chunks):
     """
-    Construct a prompt/system message from the top relevant chunks,
-    then call the ChatCompletion endpoint.
+    Build a system message from the top relevant chunks,
+    then call client.chat.completions.create(...) with model=...
     """
     context_text = "\n\n".join(relevant_chunks)
     system_prompt = (
@@ -91,8 +92,8 @@ def chat_completion_with_context(client, user_query, relevant_chunks):
         {"role": "user", "content": user_query},
     ]
 
-    response = client.create_chat_completion(
-        engine=CHAT_DEPLOYMENT_NAME,
+    response = client.chat.completions.create(
+        model=CHAT_MODEL_NAME,
         messages=messages,
         temperature=0.7,
     )
@@ -102,7 +103,7 @@ def chat_completion_with_context(client, user_query, relevant_chunks):
 # 3. Streamlit RAG Demo
 # ------------------------------
 def main():
-    st.title("RAG Demo with Azure OpenAI + FAISS (Batch Embedding)")
+    st.title("RAG Demo with Azure OpenAI + FAISS (Batch Embedding, client.chat.completions.create)")
 
     # We'll store chunks, embeddings, and the FAISS index in session_state
     if "chunks" not in st.session_state:
@@ -172,8 +173,8 @@ def main():
                 batch_texts = all_chunks[i : i + BATCH_SIZE]
 
                 # Single request for multiple texts
-                response = client.create_embedding(
-                    engine=EMBEDDING_DEPLOYMENT_NAME,
+                response = client.embeddings.create(
+                    model=EMBEDDING_MODEL_NAME,
                     input=batch_texts
                 )
 
@@ -200,9 +201,9 @@ def main():
             st.warning("No documents have been processed yet. Please upload & process documents first.")
             return
 
-        # Embed the user query (just 1 item, so no real 'batch' needed here)
-        response = client.create_embedding(
-            engine=EMBEDDING_DEPLOYMENT_NAME,
+        # Embed the user query (just 1 item)
+        response = client.embeddings.create(
+            model=EMBEDDING_MODEL_NAME,
             input=[user_query]
         )
         query_emb = np.array(response.data[0].embedding, dtype=np.float32).reshape(1, -1)
@@ -217,11 +218,7 @@ def main():
             top_chunks.append(st.session_state.chunks[idx])
 
         # Chat Completion with relevant chunks
-        assistant_reply = chat_completion_with_context(
-            client,
-            user_query,
-            top_chunks
-        )
+        assistant_reply = chat_completion_with_context(user_query, top_chunks)
         st.write("**Assistant**:", assistant_reply)
 
         # Optional: Show sources
