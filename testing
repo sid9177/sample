@@ -1,0 +1,28 @@
+import streamlit as st
+
+def chunk_text(text, chunk_size=1000, overlap=200):
+    """
+    Splits 'text' into chunks of size 'chunk_size' with 'overlap'.
+    Here we treat chunk_size as a character count for simplicity.
+    """
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        chunk = text[start:end]
+        chunks.append(chunk)
+        start += (chunk_size - overlap)
+    return chunks
+
+def main():
+    st.title("Chunk Text Demo")
+
+    # Example string to chunk
+    policy_text = "Lorem ipsum dolor sit amet, " * 60  # repeated for length
+
+    # Just show the chunked output
+    for i, chunk in enumerate(chunk_text(policy_text)):
+        st.write(f"**Chunk #{i+1}**:\n{chunk}")
+
+if __name__ == "__main__":
+    main()
