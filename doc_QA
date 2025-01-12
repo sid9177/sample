@@ -3,26 +3,35 @@ import streamlit as st
 from openai import AzureOpenAI
 import PyPDF2
 import pandas as pd
+import numpy as np
+import faiss
 import io
 
-# -----------------------------------------------------------------------------
-# 1. AzureOpenAI Client
-# -----------------------------------------------------------------------------
-# Replace with your real Azure OpenAI endpoint, API key, etc.
+# Optional: for chunking or token counting
+# pip install tiktoken
+# import tiktoken  
+
+# ------------------------------
+# 1. Azure & Global Settings
+# ------------------------------
+EMBEDDING_DEPLOYMENT_NAME = "my-embedding-model"  # e.g. "text-embedding-ada-002" or your Azure embedding
+CHAT_DEPLOYMENT_NAME = "Cata-GPT4-o"              # Your Azure ChatGPT model deployment
+API_VERSION = "2024-05-01-preview"                # Example version
+AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "https://YOUR_AZURE_OPENAI_ENDPOINT_HERE")
+AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_API_KEY", "YOUR_AZURE_OPENAI_API_KEY_HERE")
+
+
+# Create a single AzureOpenAI client
 client = AzureOpenAI(
-    api_key=os.environ.get("AZURE_OPENAI_API_KEY", "YOUR_AZURE_OPENAI_API_KEY_HERE"),
-    azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT", "https://YOUR_AZURE_OPENAI_ENDPOINT_HERE"),
-    api_version="2024-05-01-preview",  # Example version; update if needed
+    api_key=AZURE_OPENAI_KEY,
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+    api_version=API_VERSION,
 )
 
-# The name of your Azure OpenAI model deployment
-AZURE_DEPLOYMENT_NAME = "Cata-GPT4-o"
-
-# -----------------------------------------------------------------------------
+# ------------------------------
 # 2. Helper Functions
-# -----------------------------------------------------------------------------
+# ------------------------------
 def extract_text_from_pdf(file) -> str:
-    """Extract text from a PDF file."""
     pdf_reader = PyPDF2.PdfReader(file)
     all_text = []
     for page in pdf_reader.pages:
@@ -33,7 +42,6 @@ def extract_text_from_pdf(file) -> str:
 
 
 def extract_text_from_excel(file) -> str:
-    """Extract text from an Excel file (all sheets as CSV strings)."""
     xls = pd.ExcelFile(file)
     excel_text = []
     for sheet_name in xls.sheet_names:
@@ -43,197 +51,216 @@ def extract_text_from_excel(file) -> str:
 
 
 def extract_text_from_csv(file) -> str:
-    """Extract CSV file content as text."""
     df = pd.read_csv(file)
     return df.to_csv(index=False)
 
 
-def parse_csv_text_to_df(csv_text: str) -> pd.DataFrame:
-    """Convert a CSV text string into a pandas DataFrame."""
-    return pd.read_csv(io.StringIO(csv_text))
+def chunk_text(text, chunk_size=1000, overlap=200):
+    """
+    Splits 'text' into chunks of size 'chunk_size' with 'overlap' tokens/chars.
+    For simplicity, we'll treat them as characters. For robust approach, use a tokenizer library.
+    """
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        chunk = text[start:end]
+        chunks.append(chunk)
+        start += (chunk_size - overlap)
+    return chunks
 
 
-def chat_with_azure_openai(client, conversation_history, new_user_message):
+def embed_text_azure_openai(client, texts):
     """
-    Send a chat completion request using the AzureOpenAI client.
-    Return the assistant's reply as a string.
+    Embed a list of strings 'texts' using Azure OpenAI embeddings.
+    Returns a list of embedding vectors (numpy arrays).
     """
-    messages = [{"role": role, "content": content} for (role, content) in conversation_history]
-    messages.append({"role": "user", "content": new_user_message})
+    # Each text input -> an embedding
+    # For Azure, set engine=EMBEDDING_DEPLOYMENT_NAME
+    response = client.create_embedding(
+        engine=EMBEDDING_DEPLOYMENT_NAME,
+        input=texts
+    )
+    # We'll parse the returned data
+    # response.data = list of { "index": i, "embedding": [...], "object": "embedding"}
+    embeddings = []
+    for obj in response.data:
+        embeddings.append(np.array(obj["embedding"], dtype=np.float32))
+    return embeddings
+
+
+def build_faiss_index(embeddings):
+    """
+    Build a FAISS index from a list of embedding vectors.
+    Returns (index, dim).
+    """
+    if not embeddings:
+        return None, None
+    dim = embeddings[0].shape[0]
+    # We'll use a simple Flat index with inner product (cosine similarity)
+    index = faiss.IndexFlatIP(dim)
+    # Stack embeddings into a 2D array
+    embs_array = np.stack(embeddings)
+    index.add(embs_array)
+    return index, dim
+
+
+def chat_completion_with_context(client, user_query, relevant_chunks):
+    """
+    Construct a prompt/system message from the top relevant chunks,
+    then call the ChatCompletion endpoint.
+    """
+    # Combine top chunks
+    context_text = "\n\n".join(relevant_chunks)
+    system_prompt = (
+        "You are a helpful assistant. Use the following context to answer the user's question.\n\n"
+        f"Context:\n{context_text}\n\n"
+        "Only answer using the context above. If you're not sure, say you don't know.\n"
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_query},
+    ]
 
     response = client.create_chat_completion(
-        engine=AZURE_DEPLOYMENT_NAME,
+        engine=CHAT_DEPLOYMENT_NAME,
         messages=messages,
         temperature=0.7,
     )
+    return response.choices[0].message.content
 
-    # Correct retrieval of assistant's content
-    assistant_message = response.choices[0].message.content
-    return assistant_message
 
-# -----------------------------------------------------------------------------
-# 3. Streamlit App
-# -----------------------------------------------------------------------------
+# -----------------------------------------
+# 3. Streamlit RAG Demo
+# -----------------------------------------
 def main():
-    st.title("GenAI Scorecard Metrics Data QA Chatbot (Filter on Any Column)")
+    st.title("RAG Demo with Azure OpenAI + FAISS")
 
-    # Initialize session state
-    if "conversation_history" not in st.session_state:
-        st.session_state.conversation_history = [
-            (
-                "system",
-                "You are a helpful assistant that answers questions about the "
-                "scorecard policy, methodology, formulas, and CSV data."
-            )
-        ]
+    # We'll store the chunks and their embeddings in session_state
+    if "chunks" not in st.session_state:
+        st.session_state.chunks = []
+    if "chunk_embeddings" not in st.session_state:
+        st.session_state.chunk_embeddings = []
+    if "faiss_index" not in st.session_state:
+        st.session_state.faiss_index = None
+    if "doc_sources" not in st.session_state:
+        st.session_state.doc_sources = []  # store (chunk_text, doc_name)
 
-    if "policy_text" not in st.session_state:
-        st.session_state.policy_text = None
-    if "methodology_text" not in st.session_state:
-        st.session_state.methodology_text = None
-    if "formula_text" not in st.session_state:
-        st.session_state.formula_text = None
-    if "csv_text" not in st.session_state:
-        st.session_state.csv_text = None
+    # 1) Document Upload & Chunking
+    st.header("Upload Documents and Build Index")
 
-    # We'll also store a filtered version of the CSV
-    if "filtered_csv_text" not in st.session_state:
-        st.session_state.filtered_csv_text = None
+    policy_file = st.file_uploader("Upload Policy PDF", type=["pdf"])
+    methodology_file = st.file_uploader("Upload Methodology PDF", type=["pdf"])
+    formula_file = st.file_uploader("Upload Formula Excel", type=["xlsx", "xls"])
+    csv_file = st.file_uploader("Upload CSV Data", type=["csv"])
 
-    # Step 1: Policy PDF
-    if not st.session_state.policy_text:
-        st.subheader("Step 1: Upload Policy PDF")
-        policy_file = st.file_uploader("Upload Policy PDF", type=["pdf"], key="policy_file")
+    if st.button("Process Documents"):
+        # Clear old index
+        st.session_state.chunks = []
+        st.session_state.chunk_embeddings = []
+        st.session_state.faiss_index = None
+        st.session_state.doc_sources = []
+
+        # Policy
         if policy_file is not None:
-            st.session_state.policy_text = extract_text_from_pdf(policy_file)
-            st.success("Policy PDF uploaded and processed!")
-            st.write("Proceed to Step 2.")
-        else:
-            st.stop()
+            policy_text = extract_text_from_pdf(policy_file)
+            for chunk in chunk_text(policy_text):
+                st.session_state.chunks.append(chunk)
+                st.session_state.doc_sources.append((chunk, "Policy Document"))
 
-    # Step 2: Methodology PDF
-    if not st.session_state.methodology_text:
-        st.subheader("Step 2: Upload Methodology PDF")
-        methodology_file = st.file_uploader("Upload Methodology PDF", type=["pdf"], key="methodology_file")
+        # Methodology
         if methodology_file is not None:
-            st.session_state.methodology_text = extract_text_from_pdf(methodology_file)
-            st.success("Methodology PDF uploaded and processed!")
-            st.write("Proceed to Step 3.")
-        else:
-            st.stop()
+            methodology_text = extract_text_from_pdf(methodology_file)
+            for chunk in chunk_text(methodology_text):
+                st.session_state.chunks.append(chunk)
+                st.session_state.doc_sources.append((chunk, "Methodology Document"))
 
-    # Step 3: Formula Excel
-    if not st.session_state.formula_text:
-        st.subheader("Step 3: Upload Formula Excel")
-        formula_file = st.file_uploader("Upload Formula Excel", type=["xls", "xlsx"], key="formula_file")
+        # Formula
         if formula_file is not None:
-            st.session_state.formula_text = extract_text_from_excel(formula_file)
-            st.success("Formula Excel uploaded and processed!")
-            st.write("Proceed to Step 4.")
-        else:
-            st.stop()
+            formula_text = extract_text_from_excel(formula_file)
+            for chunk in chunk_text(formula_text):
+                st.session_state.chunks.append(chunk)
+                st.session_state.doc_sources.append((chunk, "Formula Excel"))
 
-    # Step 4: CSV file
-    if not st.session_state.csv_text:
-        st.subheader("Step 4: Upload CSV Data")
-        csv_file = st.file_uploader("Upload CSV", type=["csv"], key="csv_file")
+        # CSV
         if csv_file is not None:
-            st.session_state.csv_text = extract_text_from_csv(csv_file)
-            st.success("CSV data uploaded and processed!")
-            st.write("Proceed to Step 5: Filter Data.")
-        else:
-            st.stop()
+            csv_text = extract_text_from_csv(csv_file)
+            for chunk in chunk_text(csv_text):
+                st.session_state.chunks.append(chunk)
+                st.session_state.doc_sources.append((chunk, "CSV File"))
 
-    # Step 5: Mandatory Filtering
-    if not st.session_state.filtered_csv_text:
-        st.subheader("Step 5: Filter Your CSV Data")
+        st.write(f"Total chunks created: {len(st.session_state.chunks)}")
 
-        # Convert the CSV text to a DataFrame
-        csv_df = parse_csv_text_to_df(st.session_state.csv_text)
-
-        if csv_df.empty:
-            st.error("Your CSV is empty or invalid. Please upload a valid CSV.")
-            st.stop()
-
-        # 1. Let user pick which column to filter on
-        filter_column = st.selectbox(
-            "Select a column to filter on:",
-            list(csv_df.columns),
-            index=0
-        )
-
-        # 2. Show distinct values in that column
-        unique_values = csv_df[filter_column].dropna().unique()
-        if len(unique_values) == 0:
-            st.warning(f"No values found in column '{filter_column}'.")
-            st.stop()
-
-        selected_value = st.selectbox(
-            f"Select a value from '{filter_column}' to filter by:",
-            sorted(unique_values)
-        )
-
-        # 3. Filter button
-        if st.button("Apply Filter"):
-            filtered_df = csv_df[csv_df[filter_column] == selected_value]
-            if filtered_df.empty:
-                st.warning(
-                    f"No rows found where '{filter_column}' = '{selected_value}'. "
-                    "Please choose another value."
+        # 2) Embed and Build FAISS
+        if st.session_state.chunks:
+            st.write("Generating embeddings & building FAISS index...")
+            # We'll embed in batch, for demonstration we do it in one call if not too large
+            # If you have lots of chunks, consider batching.
+            embeddings = []
+            BATCH_SIZE = 5
+            for i in range(0, len(st.session_state.chunks), BATCH_SIZE):
+                batch = st.session_state.chunks[i : i + BATCH_SIZE]
+                embs = client.create_embedding(
+                    engine=EMBEDDING_DEPLOYMENT_NAME,
+                    input=batch
                 )
-                st.stop()
-            else:
-                # Convert the filtered DataFrame back to CSV text
-                st.session_state.filtered_csv_text = filtered_df.to_csv(index=False)
-                st.success(f"Filtered on {filter_column} = {selected_value}")
-                st.write("Proceed to Chat below.")
-                # Optional: display the filtered data for user confirmation
-                st.dataframe(filtered_df)
-        else:
-            st.stop()  # Force user to apply filter before continuing
+                for obj in embs.data:
+                    embeddings.append(np.array(obj["embedding"], dtype=np.float32))
 
-    # If we get here, user has applied the filter
-    combined_documents_text = (
-        f"Policy Document:\n{st.session_state.policy_text}\n\n"
-        f"Methodology Document:\n{st.session_state.methodology_text}\n\n"
-        f"Formula Document:\n{st.session_state.formula_text}\n\n"
-        f"Filtered CSV Data:\n{st.session_state.filtered_csv_text}"
-    )
+            # Save embeddings
+            st.session_state.chunk_embeddings = embeddings
+            # Build index
+            index, dim = build_faiss_index(embeddings)
+            st.session_state.faiss_index = index
+            st.success("FAISS index built successfully!")
 
-    # Update the system message with the combined context
-    context_message = (
-        "You have the following documents as reference:\n"
-        + combined_documents_text
-        + "\nAnswer questions based on these documents. "
-          "If you're not sure or the answer isn't there, say you don't know."
-    )
-    st.session_state.conversation_history[0] = (
-        "system",
-        "You are a helpful assistant with knowledge of the policy, methodology, formulas, and CSV data. "
-        f"Use this context:\n{context_message}"
-    )
+    st.divider()
 
-    # Chat interface
-    st.subheader("Chat with the Scorecard QA Bot")
+    # 3) Query Interface
+    st.header("Ask Questions")
+    user_query = st.text_input("Enter your query:")
+    if st.button("Search & Answer"):
+        # We'll embed the user query
+        if not st.session_state.faiss_index or not st.session_state.chunk_embeddings:
+            st.warning("No documents have been processed yet. Please upload & process documents first.")
+            return
 
-    user_input = st.text_input("Ask a question about the policy, methodology, formula, or the filtered CSV:")
-    if st.button("Send") and user_input.strip():
-        assistant_reply = chat_with_azure_openai(
+        query_emb = client.create_embedding(
+            engine=EMBEDDING_DEPLOYMENT_NAME,
+            input=[user_query]
+        ).data[0].embedding
+        query_emb = np.array(query_emb, dtype=np.float32).reshape(1, -1)
+
+        # Similarity search in FAISS
+        index = st.session_state.faiss_index
+        top_k = 3
+        D, I = index.search(query_emb, top_k)  # distances, indices
+
+        # Retrieve the top chunks
+        top_chunks = []
+        for idx in I[0]:
+            chunk_text = st.session_state.chunks[idx]
+            top_chunks.append(chunk_text)
+
+        # Chat Completion with relevant chunks
+        assistant_reply = chat_completion_with_context(
             client,
-            st.session_state.conversation_history,
-            user_input
+            user_query,
+            top_chunks
         )
-        # Store the conversation
-        st.session_state.conversation_history.append(("user", user_input))
-        st.session_state.conversation_history.append(("assistant", assistant_reply))
 
-    # Display conversation
-    for role, content in st.session_state.conversation_history:
-        if role == "assistant":
-            st.markdown(f"**Assistant**: {content}")
-        elif role == "user":
-            st.markdown(f"**You**: {content}")
+        st.write("**Assistant**:", assistant_reply)
 
+        # Optional: Show the sources
+        st.subheader("Top Relevant Chunks:")
+        for i, idx in enumerate(I[0]):
+            st.markdown(f"**Rank {i+1}, Score {D[0][i]:.4f}**")
+            st.text_area(
+                label=f"Chunk from {st.session_state.doc_sources[idx][1]}",
+                value=st.session_state.doc_sources[idx][0],
+                height=100
+            )
 
 if __name__ == "__main__":
     main()
