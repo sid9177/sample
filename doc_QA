@@ -7,21 +7,16 @@ import numpy as np
 import faiss
 import io
 
-# Optional: for chunking or token counting
-# pip install tiktoken
-# import tiktoken  
-
 # ------------------------------
 # 1. Azure & Global Settings
 # ------------------------------
-EMBEDDING_DEPLOYMENT_NAME = "my-embedding-model"  # e.g. "text-embedding-ada-002" or your Azure embedding
-CHAT_DEPLOYMENT_NAME = "Cata-GPT4-o"              # Your Azure ChatGPT model deployment
-API_VERSION = "2024-05-01-preview"                # Example version
+EMBEDDING_DEPLOYMENT_NAME = "my-embedding-model"  # e.g., "text-embedding-ada-002"
+CHAT_DEPLOYMENT_NAME = "Cata-GPT4-o"              # Your Azure ChatGPT model
+API_VERSION = "2024-05-01-preview"
 AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "https://YOUR_AZURE_OPENAI_ENDPOINT_HERE")
 AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_API_KEY", "YOUR_AZURE_OPENAI_API_KEY_HERE")
 
-
-# Create a single AzureOpenAI client
+# Initialize a single AzureOpenAI client
 client = AzureOpenAI(
     api_key=AZURE_OPENAI_KEY,
     azure_endpoint=AZURE_OPENAI_ENDPOINT,
@@ -40,7 +35,6 @@ def extract_text_from_pdf(file) -> str:
             all_text.append(text)
     return "\n".join(all_text)
 
-
 def extract_text_from_excel(file) -> str:
     xls = pd.ExcelFile(file)
     excel_text = []
@@ -49,16 +43,14 @@ def extract_text_from_excel(file) -> str:
         excel_text.append(df.to_csv(index=False))
     return "\n".join(excel_text)
 
-
 def extract_text_from_csv(file) -> str:
     df = pd.read_csv(file)
     return df.to_csv(index=False)
 
-
 def chunk_text(text, chunk_size=1000, overlap=200):
     """
-    Splits 'text' into chunks of size 'chunk_size' with 'overlap' tokens/chars.
-    For simplicity, we'll treat them as characters. For robust approach, use a tokenizer library.
+    Splits 'text' into chunks of size 'chunk_size' with 'overlap' characters.
+    For a more robust approach, consider token-based chunking with tiktoken.
     """
     chunks = []
     start = 0
@@ -69,26 +61,6 @@ def chunk_text(text, chunk_size=1000, overlap=200):
         start += (chunk_size - overlap)
     return chunks
 
-
-def embed_text_azure_openai(client, texts):
-    """
-    Embed a list of strings 'texts' using Azure OpenAI embeddings.
-    Returns a list of embedding vectors (numpy arrays).
-    """
-    # Each text input -> an embedding
-    # For Azure, set engine=EMBEDDING_DEPLOYMENT_NAME
-    response = client.create_embedding(
-        engine=EMBEDDING_DEPLOYMENT_NAME,
-        input=texts
-    )
-    # We'll parse the returned data
-    # response.data = list of { "index": i, "embedding": [...], "object": "embedding"}
-    embeddings = []
-    for obj in response.data:
-        embeddings.append(np.array(obj["embedding"], dtype=np.float32))
-    return embeddings
-
-
 def build_faiss_index(embeddings):
     """
     Build a FAISS index from a list of embedding vectors.
@@ -97,20 +69,16 @@ def build_faiss_index(embeddings):
     if not embeddings:
         return None, None
     dim = embeddings[0].shape[0]
-    # We'll use a simple Flat index with inner product (cosine similarity)
-    index = faiss.IndexFlatIP(dim)
-    # Stack embeddings into a 2D array
+    index = faiss.IndexFlatIP(dim)  # Using inner-product for approximate cosine if vectors are normalized
     embs_array = np.stack(embeddings)
     index.add(embs_array)
     return index, dim
-
 
 def chat_completion_with_context(client, user_query, relevant_chunks):
     """
     Construct a prompt/system message from the top relevant chunks,
     then call the ChatCompletion endpoint.
     """
-    # Combine top chunks
     context_text = "\n\n".join(relevant_chunks)
     system_prompt = (
         "You are a helpful assistant. Use the following context to answer the user's question.\n\n"
@@ -130,14 +98,13 @@ def chat_completion_with_context(client, user_query, relevant_chunks):
     )
     return response.choices[0].message.content
 
-
-# -----------------------------------------
+# ------------------------------
 # 3. Streamlit RAG Demo
-# -----------------------------------------
+# ------------------------------
 def main():
-    st.title("RAG Demo with Azure OpenAI + FAISS")
+    st.title("RAG Demo with Azure OpenAI + FAISS (Batch Embedding)")
 
-    # We'll store the chunks and their embeddings in session_state
+    # We'll store chunks, embeddings, and the FAISS index in session_state
     if "chunks" not in st.session_state:
         st.session_state.chunks = []
     if "chunk_embeddings" not in st.session_state:
@@ -145,18 +112,18 @@ def main():
     if "faiss_index" not in st.session_state:
         st.session_state.faiss_index = None
     if "doc_sources" not in st.session_state:
-        st.session_state.doc_sources = []  # store (chunk_text, doc_name)
+        st.session_state.doc_sources = []
 
     # 1) Document Upload & Chunking
     st.header("Upload Documents and Build Index")
 
-    policy_file = st.file_uploader("Upload Policy PDF", type=["pdf"])
-    methodology_file = st.file_uploader("Upload Methodology PDF", type=["pdf"])
-    formula_file = st.file_uploader("Upload Formula Excel", type=["xlsx", "xls"])
-    csv_file = st.file_uploader("Upload CSV Data", type=["csv"])
+    policy_file = st.file_uploader("Policy PDF", type=["pdf"])
+    methodology_file = st.file_uploader("Methodology PDF", type=["pdf"])
+    formula_file = st.file_uploader("Formula Excel", type=["xlsx", "xls"])
+    csv_file = st.file_uploader("CSV Data", type=["csv"])
 
     if st.button("Process Documents"):
-        # Clear old index
+        # Clear old data
         st.session_state.chunks = []
         st.session_state.chunk_embeddings = []
         st.session_state.faiss_index = None
@@ -167,14 +134,14 @@ def main():
             policy_text = extract_text_from_pdf(policy_file)
             for chunk in chunk_text(policy_text):
                 st.session_state.chunks.append(chunk)
-                st.session_state.doc_sources.append((chunk, "Policy Document"))
+                st.session_state.doc_sources.append((chunk, "Policy PDF"))
 
         # Methodology
         if methodology_file is not None:
             methodology_text = extract_text_from_pdf(methodology_file)
             for chunk in chunk_text(methodology_text):
                 st.session_state.chunks.append(chunk)
-                st.session_state.doc_sources.append((chunk, "Methodology Document"))
+                st.session_state.doc_sources.append((chunk, "Methodology PDF"))
 
         # Formula
         if formula_file is not None:
@@ -188,29 +155,37 @@ def main():
             csv_text = extract_text_from_csv(csv_file)
             for chunk in chunk_text(csv_text):
                 st.session_state.chunks.append(chunk)
-                st.session_state.doc_sources.append((chunk, "CSV File"))
+                st.session_state.doc_sources.append((chunk, "CSV"))
 
         st.write(f"Total chunks created: {len(st.session_state.chunks)}")
 
-        # 2) Embed and Build FAISS
+        # 2) Embed and Build FAISS (Batch Embedding)
         if st.session_state.chunks:
-            st.write("Generating embeddings & building FAISS index...")
-            # We'll embed in batch, for demonstration we do it in one call if not too large
-            # If you have lots of chunks, consider batching.
-            embeddings = []
-            BATCH_SIZE = 5
-            for i in range(0, len(st.session_state.chunks), BATCH_SIZE):
-                batch = st.session_state.chunks[i : i + BATCH_SIZE]
-                embs = client.create_embedding(
-                    engine=EMBEDDING_DEPLOYMENT_NAME,
-                    input=batch
-                )
-                for obj in embs.data:
-                    embeddings.append(np.array(obj["embedding"], dtype=np.float32))
+            st.write("Generating embeddings in batches & building FAISS index...")
 
-            # Save embeddings
+            BATCH_SIZE = 50
+            embeddings = []
+            all_chunks = st.session_state.chunks
+
+            # Loop over chunks in groups of BATCH_SIZE
+            for i in range(0, len(all_chunks), BATCH_SIZE):
+                batch_texts = all_chunks[i : i + BATCH_SIZE]
+
+                # Single request for multiple texts
+                response = client.create_embedding(
+                    engine=EMBEDDING_DEPLOYMENT_NAME,
+                    input=batch_texts
+                )
+
+                # Each item in response.data corresponds to one embedding
+                for obj in response.data:
+                    # Use dot notation for the embedding attribute
+                    embeddings.append(np.array(obj.embedding, dtype=np.float32))
+
+            # Store embeddings
             st.session_state.chunk_embeddings = embeddings
-            # Build index
+
+            # Build FAISS index
             index, dim = build_faiss_index(embeddings)
             st.session_state.faiss_index = index
             st.success("FAISS index built successfully!")
@@ -221,27 +196,25 @@ def main():
     st.header("Ask Questions")
     user_query = st.text_input("Enter your query:")
     if st.button("Search & Answer"):
-        # We'll embed the user query
         if not st.session_state.faiss_index or not st.session_state.chunk_embeddings:
             st.warning("No documents have been processed yet. Please upload & process documents first.")
             return
 
-        query_emb = client.create_embedding(
+        # Embed the user query (just 1 item, so no real 'batch' needed here)
+        response = client.create_embedding(
             engine=EMBEDDING_DEPLOYMENT_NAME,
             input=[user_query]
-        ).data[0].embedding
-        query_emb = np.array(query_emb, dtype=np.float32).reshape(1, -1)
+        )
+        query_emb = np.array(response.data[0].embedding, dtype=np.float32).reshape(1, -1)
 
         # Similarity search in FAISS
-        index = st.session_state.faiss_index
         top_k = 3
-        D, I = index.search(query_emb, top_k)  # distances, indices
+        D, I = st.session_state.faiss_index.search(query_emb, top_k)
 
         # Retrieve the top chunks
         top_chunks = []
         for idx in I[0]:
-            chunk_text = st.session_state.chunks[idx]
-            top_chunks.append(chunk_text)
+            top_chunks.append(st.session_state.chunks[idx])
 
         # Chat Completion with relevant chunks
         assistant_reply = chat_completion_with_context(
@@ -249,17 +222,18 @@ def main():
             user_query,
             top_chunks
         )
-
         st.write("**Assistant**:", assistant_reply)
 
-        # Optional: Show the sources
+        # Optional: Show sources
         st.subheader("Top Relevant Chunks:")
-        for i, idx in enumerate(I[0]):
-            st.markdown(f"**Rank {i+1}, Score {D[0][i]:.4f}**")
+        for rank, idx in enumerate(I[0]):
+            st.markdown(f"**Rank {rank+1}, Score {D[0][rank]:.4f}**")
+            doc_label = st.session_state.doc_sources[idx][1]
+            chunk_text_str = st.session_state.doc_sources[idx][0]
             st.text_area(
-                label=f"Chunk from {st.session_state.doc_sources[idx][1]}",
-                value=st.session_state.doc_sources[idx][0],
-                height=100
+                label=f"Chunk from {doc_label}",
+                value=chunk_text_str,
+                height=80
             )
 
 if __name__ == "__main__":
