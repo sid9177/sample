@@ -6,13 +6,13 @@ import pandas as pd
 import numpy as np
 import faiss
 import io
-import tiktoken  # <-- for token-based chunking
+import tiktoken  # for token-based chunking
 
 # ------------------------------------------------------------------------------
 # 1. Azure & Global Settings
 # ------------------------------------------------------------------------------
-EMBEDDING_MODEL_NAME = "my-embedding-model"  # e.g., "text-embedding-ada-002" or your Azure embedding deployment
-CHAT_MODEL_NAME = "Cata-GPT4-o"              # Your Azure ChatGPT model
+EMBEDDING_MODEL_NAME = "text-embedding-ada-002"  # or your actual Azure embedding deployment name
+CHAT_MODEL_NAME = "Cata-GPT4-o"                  # Your Azure ChatGPT model name/deployment
 API_VERSION = "2024-05-01-preview"
 AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "https://YOUR_AZURE_OPENAI_ENDPOINT_HERE")
 AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_API_KEY", "YOUR_AZURE_OPENAI_API_KEY_HERE")
@@ -54,8 +54,8 @@ def extract_text_from_csv(file) -> str:
 
 def chunk_text_by_tokens(text: str, chunk_tokens=512, overlap_tokens=50) -> list[str]:
     """
-    Uses 'tiktoken' to split 'text' into ~chunk_tokens tokens, with overlap_tokens overlap.
-    Helps preserve sentence/paragraph coherence vs. naive char splitting.
+    Uses 'tiktoken' to split 'text' into ~chunk_tokens tokens, 
+    with overlap_tokens overlap. Helps preserve sentence/paragraph coherence.
     """
     enc = tiktoken.get_encoding("cl100k_base")  # or whichever encoding is correct for your model
     input_ids = enc.encode(text)
@@ -64,7 +64,6 @@ def chunk_text_by_tokens(text: str, chunk_tokens=512, overlap_tokens=50) -> list
     start = 0
     while start < len(input_ids):
         end = start + chunk_tokens
-        # Slice out the token list for this chunk
         chunk_slice = input_ids[start:end]
         # Decode back to string
         chunk_str = enc.decode(chunk_slice)
@@ -75,26 +74,17 @@ def chunk_text_by_tokens(text: str, chunk_tokens=512, overlap_tokens=50) -> list
     return chunks
 
 
-def l2_normalize(vec: np.ndarray) -> np.ndarray:
-    """Returns the L2-normalized version of 'vec'."""
-    norm = np.linalg.norm(vec)
-    if norm == 0:
-        return vec
-    return vec / norm
-
-
 def build_faiss_index(embeddings):
     """
-    Build a FAISS index from a list of normalized embedding vectors.
-    We'll use IndexFlatIP, which approximates cosine similarity if embeddings are normalized.
+    Build a FAISS index from a list of (unnormalized) embedding vectors.
+    We'll use IndexFlatL2 here. If you prefer IP, you can switch to IndexFlatIP.
     """
     if not embeddings:
         return None, None
     dim = embeddings[0].shape[0]
 
-    # Create an IndexFlatIP for inner product. With normalized vectors, IP ~ cosine similarity
-    index = faiss.IndexFlatIP(dim)
-
+    # For unnormalized embeddings, we often use L2 distance (IndexFlatL2).
+    index = faiss.IndexFlatL2(dim)
     embs_array = np.stack(embeddings)
     index.add(embs_array)
     return index, dim
@@ -106,10 +96,20 @@ def chat_completion_with_context(user_query, relevant_chunks):
     then call client.chat.completions.create(...) with model=...
     """
     context_text = "\n\n".join(relevant_chunks)
+    
+    # Refined system prompt
     system_prompt = (
-        "You are a helpful assistant. Use the following context to answer the user's question.\n\n"
+        "You are a helpful assistant with knowledge of four documents:\n"
+        "1. **Policy Document (Subject Matter Expert)**: contains the domain knowledge of scorecard metrics.\n"
+        "2. **Methodology Document**: explains how to calculate scorecard metrics.\n"
+        "3. **Formula File**: details on formulae to compute metrics based on the methodology.\n"
+        "4. **CSV File**: provides the actual metrics data that are calculated using the formula file.\n\n"
+        "Use the following context extracted from these documents to answer the user's question.\n\n"
         f"Context:\n{context_text}\n\n"
-        "Only answer using the context above. If you're not sure, say you don't know.\n"
+        "When answering:\n"
+        "- Base your response solely on the information found in these documents.\n"
+        "- If you are not certain or the information is not in the documents, say you don't know.\n"
+        "- Do not invent or assume facts not provided.\n"
     )
 
     messages = [
@@ -129,7 +129,7 @@ def chat_completion_with_context(user_query, relevant_chunks):
 # 3. Streamlit RAG Demo
 # ------------------------------------------------------------------------------
 def main():
-    st.title("RAG Demo with Token-Based Chunking & L2-Norm Embeddings")
+    st.title("RAG Demo with Token-Based Chunking & Unnormalized Embeddings (L2 Distance)")
 
     # We'll store chunks, embeddings, and the FAISS index in session_state
     if "chunks" not in st.session_state:
@@ -194,9 +194,9 @@ def main():
 
         st.write(f"Total chunks created: {len(st.session_state.chunks)}")
 
-        # 2) Embed (with L2 normalization) and Build FAISS Index
+        # 2) Embed (without normalization) and Build FAISS Index
         if st.session_state.chunks:
-            st.write("Generating embeddings (with L2 normalization) & building FAISS index...")
+            st.write("Generating embeddings in batches & building FAISS index...")
 
             BATCH_SIZE = 50
             embeddings = []
@@ -206,7 +206,6 @@ def main():
             for i in range(0, len(all_chunks), BATCH_SIZE):
                 batch_texts = all_chunks[i : i + BATCH_SIZE]
 
-                # Single request for multiple texts
                 response = client.embeddings.create(
                     model=EMBEDDING_MODEL_NAME,
                     input=batch_texts
@@ -214,13 +213,12 @@ def main():
 
                 for obj in response.data:
                     embedding_vec = np.array(obj.embedding, dtype=np.float32)
-                    # L2-normalize each embedding for IP ~ cosine
-                    embedding_vec = l2_normalize(embedding_vec)
+                    # We do NOT normalize here; keep the raw embeddings
                     embeddings.append(embedding_vec)
 
             st.session_state.chunk_embeddings = embeddings
 
-            # Build the FAISS index with normalized embeddings
+            # Build the FAISS index using L2 distance
             index, dim = build_faiss_index(embeddings)
             st.session_state.faiss_index = index
 
@@ -232,21 +230,18 @@ def main():
     st.header("Ask Questions")
     user_query = st.text_input("Enter your query:")
     if st.button("Search & Answer"):
-        # Validate
         if not st.session_state.faiss_index or not st.session_state.chunk_embeddings:
             st.warning("No documents have been processed yet. Please upload & process documents first.")
             return
 
-        # Embed the user query (just 1 item)
+        # Embed the user query
         response = client.embeddings.create(
             model=EMBEDDING_MODEL_NAME,
             input=[user_query]
         )
-        query_emb_vec = np.array(response.data[0].embedding, dtype=np.float32)
-        # L2-normalize the query embedding as well
-        query_emb_vec = l2_normalize(query_emb_vec).reshape(1, -1)
+        query_emb_vec = np.array(response.data[0].embedding, dtype=np.float32).reshape(1, -1)
 
-        # Similarity search in FAISS
+        # Similarity search in FAISS with L2
         top_k = 3
         D, I = st.session_state.faiss_index.search(query_emb_vec, top_k)
 
@@ -262,7 +257,7 @@ def main():
         # Optional: Show sources
         st.subheader("Top Relevant Chunks:")
         for rank, idx in enumerate(I[0]):
-            st.markdown(f"**Rank {rank+1}, Score {D[0][rank]:.4f}**")
+            st.markdown(f"**Rank {rank+1}, Distance {D[0][rank]:.4f}** (lower = closer in L2)")
             doc_label = st.session_state.doc_sources[idx][1]
             chunk_text_str = st.session_state.doc_sources[idx][0]
             st.text_area(
