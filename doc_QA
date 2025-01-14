@@ -6,12 +6,13 @@ import pandas as pd
 import numpy as np
 import faiss
 import io
+import tiktoken  # <-- for token-based chunking
 
-# ------------------------------
+# ------------------------------------------------------------------------------
 # 1. Azure & Global Settings
-# ------------------------------
-EMBEDDING_MODEL_NAME = "my-embedding-model"  # e.g., "text-embedding-ada-002" or your Azure embedding deployment name
-CHAT_MODEL_NAME = "Cata-GPT4-o"              # Your Azure ChatGPT model deployment name
+# ------------------------------------------------------------------------------
+EMBEDDING_MODEL_NAME = "my-embedding-model"  # e.g., "text-embedding-ada-002" or your Azure embedding deployment
+CHAT_MODEL_NAME = "Cata-GPT4-o"              # Your Azure ChatGPT model
 API_VERSION = "2024-05-01-preview"
 AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "https://YOUR_AZURE_OPENAI_ENDPOINT_HERE")
 AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_API_KEY", "YOUR_AZURE_OPENAI_API_KEY_HERE")
@@ -23,9 +24,10 @@ client = AzureOpenAI(
     api_version=API_VERSION,
 )
 
-# ------------------------------
+
+# ------------------------------------------------------------------------------
 # 2. Helper Functions
-# ------------------------------
+# ------------------------------------------------------------------------------
 def extract_text_from_pdf(file) -> str:
     pdf_reader = PyPDF2.PdfReader(file)
     all_text = []
@@ -35,6 +37,7 @@ def extract_text_from_pdf(file) -> str:
             all_text.append(text)
     return "\n".join(all_text)
 
+
 def extract_text_from_excel(file) -> str:
     xls = pd.ExcelFile(file)
     excel_text = []
@@ -43,33 +46,55 @@ def extract_text_from_excel(file) -> str:
         excel_text.append(df.to_csv(index=False))
     return "\n".join(excel_text)
 
+
 def extract_text_from_csv(file) -> str:
     df = pd.read_csv(file)
     return df.to_csv(index=False)
 
-def chunk_text(text, chunk_size=1000, overlap=200):
+
+def chunk_text_by_tokens(text: str, chunk_tokens=512, overlap_tokens=50) -> list[str]:
     """
-    Splits 'text' into chunks of size 'chunk_size' with 'overlap' characters.
-    For a more robust approach, consider token-based chunking with tiktoken.
+    Uses 'tiktoken' to split 'text' into ~chunk_tokens tokens, with overlap_tokens overlap.
+    Helps preserve sentence/paragraph coherence vs. naive char splitting.
     """
+    enc = tiktoken.get_encoding("cl100k_base")  # or whichever encoding is correct for your model
+    input_ids = enc.encode(text)
+
     chunks = []
     start = 0
-    while start < len(text):
-        end = start + chunk_size
-        chunk = text[start:end]
-        chunks.append(chunk)
-        start += (chunk_size - overlap)
+    while start < len(input_ids):
+        end = start + chunk_tokens
+        # Slice out the token list for this chunk
+        chunk_slice = input_ids[start:end]
+        # Decode back to string
+        chunk_str = enc.decode(chunk_slice)
+        chunks.append(chunk_str)
+        # Advance by chunk_tokens - overlap_tokens
+        start += (chunk_tokens - overlap_tokens)
+
     return chunks
+
+
+def l2_normalize(vec: np.ndarray) -> np.ndarray:
+    """Returns the L2-normalized version of 'vec'."""
+    norm = np.linalg.norm(vec)
+    if norm == 0:
+        return vec
+    return vec / norm
+
 
 def build_faiss_index(embeddings):
     """
-    Build a FAISS index from a list of embedding vectors.
-    Returns (index, dim).
+    Build a FAISS index from a list of normalized embedding vectors.
+    We'll use IndexFlatIP, which approximates cosine similarity if embeddings are normalized.
     """
     if not embeddings:
         return None, None
     dim = embeddings[0].shape[0]
-    index = faiss.IndexFlatIP(dim)  # Using inner-product for approximate cosine if vectors are normalized
+
+    # Create an IndexFlatIP for inner product. With normalized vectors, IP ~ cosine similarity
+    index = faiss.IndexFlatIP(dim)
+
     embs_array = np.stack(embeddings)
     index.add(embs_array)
     return index, dim
@@ -99,11 +124,12 @@ def chat_completion_with_context(user_query, relevant_chunks):
     )
     return response.choices[0].message.content
 
-# ------------------------------
+
+# ------------------------------------------------------------------------------
 # 3. Streamlit RAG Demo
-# ------------------------------
+# ------------------------------------------------------------------------------
 def main():
-    st.title("RAG Demo with Azure OpenAI + FAISS (Batch Embedding, client.chat.completions.create)")
+    st.title("RAG Demo with Token-Based Chunking & L2-Norm Embeddings")
 
     # We'll store chunks, embeddings, and the FAISS index in session_state
     if "chunks" not in st.session_state:
@@ -115,7 +141,7 @@ def main():
     if "doc_sources" not in st.session_state:
         st.session_state.doc_sources = []
 
-    # 1) Document Upload & Chunking
+    # 1) Document Upload & Token-Based Chunking
     st.header("Upload Documents and Build Index")
 
     policy_file = st.file_uploader("Policy PDF", type=["pdf"])
@@ -130,39 +156,47 @@ def main():
         st.session_state.faiss_index = None
         st.session_state.doc_sources = []
 
+        # Example chunk settings
+        CHUNK_TOKENS = 512
+        OVERLAP_TOKENS = 50
+
         # Policy
         if policy_file is not None:
             policy_text = extract_text_from_pdf(policy_file)
-            for chunk in chunk_text(policy_text):
-                st.session_state.chunks.append(chunk)
-                st.session_state.doc_sources.append((chunk, "Policy PDF"))
+            policy_chunks = chunk_text_by_tokens(policy_text, CHUNK_TOKENS, OVERLAP_TOKENS)
+            for c in policy_chunks:
+                st.session_state.chunks.append(c)
+                st.session_state.doc_sources.append((c, "Policy PDF"))
 
         # Methodology
         if methodology_file is not None:
             methodology_text = extract_text_from_pdf(methodology_file)
-            for chunk in chunk_text(methodology_text):
-                st.session_state.chunks.append(chunk)
-                st.session_state.doc_sources.append((chunk, "Methodology PDF"))
+            methodology_chunks = chunk_text_by_tokens(methodology_text, CHUNK_TOKENS, OVERLAP_TOKENS)
+            for c in methodology_chunks:
+                st.session_state.chunks.append(c)
+                st.session_state.doc_sources.append((c, "Methodology PDF"))
 
         # Formula
         if formula_file is not None:
             formula_text = extract_text_from_excel(formula_file)
-            for chunk in chunk_text(formula_text):
-                st.session_state.chunks.append(chunk)
-                st.session_state.doc_sources.append((chunk, "Formula Excel"))
+            formula_chunks = chunk_text_by_tokens(formula_text, CHUNK_TOKENS, OVERLAP_TOKENS)
+            for c in formula_chunks:
+                st.session_state.chunks.append(c)
+                st.session_state.doc_sources.append((c, "Formula Excel"))
 
         # CSV
         if csv_file is not None:
             csv_text = extract_text_from_csv(csv_file)
-            for chunk in chunk_text(csv_text):
-                st.session_state.chunks.append(chunk)
-                st.session_state.doc_sources.append((chunk, "CSV"))
+            csv_chunks = chunk_text_by_tokens(csv_text, CHUNK_TOKENS, OVERLAP_TOKENS)
+            for c in csv_chunks:
+                st.session_state.chunks.append(c)
+                st.session_state.doc_sources.append((c, "CSV"))
 
         st.write(f"Total chunks created: {len(st.session_state.chunks)}")
 
-        # 2) Embed and Build FAISS (Batch Embedding)
+        # 2) Embed (with L2 normalization) and Build FAISS Index
         if st.session_state.chunks:
-            st.write("Generating embeddings in batches & building FAISS index...")
+            st.write("Generating embeddings (with L2 normalization) & building FAISS index...")
 
             BATCH_SIZE = 50
             embeddings = []
@@ -178,17 +212,18 @@ def main():
                     input=batch_texts
                 )
 
-                # Each item in response.data corresponds to one embedding
                 for obj in response.data:
-                    # Use dot notation for the embedding attribute
-                    embeddings.append(np.array(obj.embedding, dtype=np.float32))
+                    embedding_vec = np.array(obj.embedding, dtype=np.float32)
+                    # L2-normalize each embedding for IP ~ cosine
+                    embedding_vec = l2_normalize(embedding_vec)
+                    embeddings.append(embedding_vec)
 
-            # Store embeddings
             st.session_state.chunk_embeddings = embeddings
 
-            # Build FAISS index
+            # Build the FAISS index with normalized embeddings
             index, dim = build_faiss_index(embeddings)
             st.session_state.faiss_index = index
+
             st.success("FAISS index built successfully!")
 
     st.divider()
@@ -197,6 +232,7 @@ def main():
     st.header("Ask Questions")
     user_query = st.text_input("Enter your query:")
     if st.button("Search & Answer"):
+        # Validate
         if not st.session_state.faiss_index or not st.session_state.chunk_embeddings:
             st.warning("No documents have been processed yet. Please upload & process documents first.")
             return
@@ -206,11 +242,13 @@ def main():
             model=EMBEDDING_MODEL_NAME,
             input=[user_query]
         )
-        query_emb = np.array(response.data[0].embedding, dtype=np.float32).reshape(1, -1)
+        query_emb_vec = np.array(response.data[0].embedding, dtype=np.float32)
+        # L2-normalize the query embedding as well
+        query_emb_vec = l2_normalize(query_emb_vec).reshape(1, -1)
 
         # Similarity search in FAISS
         top_k = 3
-        D, I = st.session_state.faiss_index.search(query_emb, top_k)
+        D, I = st.session_state.faiss_index.search(query_emb_vec, top_k)
 
         # Retrieve the top chunks
         top_chunks = []
@@ -230,8 +268,9 @@ def main():
             st.text_area(
                 label=f"Chunk from {doc_label}",
                 value=chunk_text_str,
-                height=80
+                height=100
             )
+
 
 if __name__ == "__main__":
     main()
