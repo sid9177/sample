@@ -1,0 +1,85 @@
+#### Authenticating with Tableau Server Using a Personal Access Token
+
+To authenticate with Tableau Server using a Personal Access Token (PAT), you can modify the previous script to utilize the token instead of a username and password. This method is more secure and allows for long-lived sessions without hard-coded credentials.
+
+---
+
+#### Python Code Example
+
+Here’s how you can authenticate using a Personal Access Token and extract lineage information:
+
+```python
+import tableauserverclient as TSC
+import requests
+
+# Tableau Server connection details
+server_url = "https://your-tableau-server-url"
+personal_access_token_name = "your-token-name"
+personal_access_token_secret = "your-token-secret"
+site_id = ""  # Leave empty for the default site
+
+# Authenticate with Tableau Server using Personal Access Token
+tableau_auth = TSC.PersonalAccessTokenAuth(personal_access_token_name, personal_access_token_secret, site_id)
+server = TSC.Server(server_url, use_server_version=True)
+
+# Function to query Metadata API for lineage
+def get_lineage():
+    query = """
+    {
+        lineage {
+            nodes {
+                id
+                name
+                type
+                upstream {
+                    id
+                    name
+                    type
+                }
+                downstream {
+                    id
+                    name
+                    type
+                }
+            }
+        }
+    }
+    """
+    # Make a GraphQL request to the Metadata API
+    url = f"{server_url}/api/metadata/graphql"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Tableau-Auth": server.auth_token
+    }
+    response = requests.post(url, json={"query": query}, headers=headers)
+    
+    if response.status_code == 200:
+        return response.json()
+    else:
+        print(f"Error: {response.status_code}, {response.text}")
+        return None
+
+# Main script
+with server.auth.sign_in(tableau_auth):
+    lineage_data = get_lineage()
+    if lineage_data:
+        print("Lineage Data:")
+        print(lineage_data)
+```
+
+---
+
+#### Explanation of the Code
+1. **Personal Access Token Authentication**: The script uses `TSC.PersonalAccessTokenAuth` to authenticate with Tableau Server using the token name and secret.
+2. **GraphQL Query**: The same GraphQL query is used to fetch lineage information.
+3. **HTTP Request**: The request to the Metadata API remains unchanged, but now it uses the token for authentication.
+4. **Output**: The lineage data is printed in JSON format.
+
+---
+
+#### Notes
+- Replace `your-tableau-server-url`, `your-token-name`, and `your-token-secret` with your actual Tableau Server details and token information.
+- Ensure that the Personal Access Token has the necessary permissions to access the Metadata API.
+- This method is recommended for better security practices, as it avoids using hard-coded usernames and passwords.
+
+Feel free to ask if you have any more questions or need further assistance!
