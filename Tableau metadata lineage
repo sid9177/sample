@@ -26,21 +26,20 @@ server = TSC.Server(server_url, use_server_version=True)
 def get_lineage():
     query = """
     {
-        lineage {
-            nodes {
+        workbooks {
+            id
+            name
+            project {
                 id
                 name
-                type
-                upstream {
-                    id
-                    name
-                    type
-                }
-                downstream {
-                    id
-                    name
-                    type
-                }
+            }
+        }
+        datasources {
+            id
+            name
+            project {
+                id
+                name
             }
         }
     }
