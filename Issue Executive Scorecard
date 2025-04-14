@@ -1,10 +1,18 @@
-IF [Completion Date] >= DATETRUNC('year', TODAY()) 
+IF [Completion Date] >= DATETRUNC('year', TODAY())
    AND [Completion Date] <= TODAY() THEN
-    IF [Completion Date] <= [Target Date] THEN
-        // Check if there's a reopen within YTD that happens AFTER the completion date.
-        IF NOT ISNULL([Reopen Date]) 
-           AND [Reopen Date] >= DATETRUNC('year', TODAY()) 
-           AND [Reopen Date] > [Completion Date] THEN
+
+    // Determine if issue is on time, either by target or revised target.
+    IF ([Completion Date] <= [Target Date] OR [Completion Date] <= [Revised Target Date]) THEN
+
+        // If issue was later reopened within YTD (IA or Regulator) remove OTR credit.
+        IF ((NOT ISNULL([IA Reopen Date]) 
+              AND [IA Reopen Date] >= DATETRUNC('year', TODAY()) 
+              AND [IA Reopen Date] > [Completion Date])
+            OR
+            (NOT ISNULL([Regulator Reopen Date]) 
+              AND [Regulator Reopen Date] >= DATETRUNC('year', TODAY()) 
+              AND [Regulator Reopen Date] > [Completion Date]))
+        THEN
             0
         ELSE
             1
