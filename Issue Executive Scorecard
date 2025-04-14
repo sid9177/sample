@@ -1,0 +1,17 @@
+IF [Completion Date] >= DATETRUNC('year', TODAY()) 
+   AND [Completion Date] <= TODAY() THEN
+    IF [Completion Date] <= [Target Date] THEN
+        // Check if there's a reopen within YTD that happens AFTER the completion date.
+        IF NOT ISNULL([Reopen Date]) 
+           AND [Reopen Date] >= DATETRUNC('year', TODAY()) 
+           AND [Reopen Date] > [Completion Date] THEN
+            0
+        ELSE
+            1
+        END
+    ELSE
+        0
+    END
+ELSE
+    0
+END
