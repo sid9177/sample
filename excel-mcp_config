@@ -1,16 +1,8 @@
 {
   "Excel Analyzer 📊": {
-    "command": "uv",
+    "command": "python", // Or python3, or the full path to the python executable
     "args": [
-      "run",
-      "--with", "fastmcp",        // Core dependency
-      "--with", "pandas",        // Your server's dependency
-      "--with", "openpyxl",      // Your server's dependency
-      "--with", "matplotlib",    // Your server's dependency
-      "--with", "pillow",        // Your server's dependency
-      // Command to run *within* the uv environment:
-      "fastmcp", "run", "/absolute/path/to/your/excel_analyzer.py" // <-- IMPORTANT: Replace this path!
+      "/absolute/path/to/your/excel_analyzer.py" // <-- IMPORTANT: Replace this path!
     ]
-    }
   }
 }
