@@ -1,0 +1,10 @@
+# Create a directory for the project
+mkdir excel-mcp-server
+cd excel-mcp-server
+
+# Create and activate a virtual environment (using uv)
+uv venv
+source .venv/bin/activate # or .venv\Scripts\activate on Windows
+
+# Install necessary libraries
+uv pip install fastmcp pandas openpyxl matplotlib pillow
