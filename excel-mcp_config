@@ -1,8 +1,11 @@
 {
-  "Excel Analyzer 📊": {
-    "command": "python", // Or python3, or the full path to the python executable
-    "args": [
-      "/absolute/path/to/your/excel_analyzer.py" // <-- IMPORTANT: Replace this path!
-    ]
+  "mcpServers": {
+    "Excel Analyzer 📊": {
+      "command": "python", // Or potentially "python3" or the full path like "/usr/bin/python3"
+      "args": [
+        "/absolute/path/to/your/excel_analyzer.py"
+        // --------------------
+      ]
+    }
   }
 }
