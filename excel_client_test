@@ -1,0 +1,137 @@
+# client_test.py
+import asyncio
+import base64
+from pathlib import Path
+import traceback # Import traceback
+
+# Make sure ImageContent is imported if you need to check its type explicitly
+from mcp.types import ImageContent, TextContent
+
+from fastmcp import Client
+from fastmcp.exceptions import ClientError # Import ClientError
+
+async def main():
+    # --- IMPORTANT ---
+    # Replace with the *absolute* path to your sample_data.xlsx
+    excel_file_path = str(Path("./sample_data.xlsx").resolve())
+    # ---------------
+
+    # Connect to the server running via python/fastmcp run
+    async with Client("excel_analyzer.py") as client:
+        print("--- Listing Tools ---")
+        try:
+            tools = await client.list_tools()
+            print([t.name for t in tools])
+        except Exception as e:
+            print(f"Error listing tools: {e}")
+            return # Exit if basic connection fails
+
+        print(f"\n--- Loading Data: {excel_file_path} ---")
+        try:
+            load_result = await client.call_tool(
+                "load_excel_data",
+                {"file_path": excel_file_path}
+            )
+            print(load_result)
+            # Check if loading returned an error message (though it should raise ClientError)
+            if isinstance(load_result[0], TextContent) and "Error" in load_result[0].text:
+                 print(f"Error reported by load_excel_data: {load_result[0].text}")
+                 # Decide if you want to stop here
+                 # return
+        except ClientError as e:
+             print(f"ERROR during load_excel_data: {e}")
+             traceback.print_exc()
+             return # Stop if loading fails
+        except Exception as e:
+             print(f"Unexpected ERROR during load_excel_data: {e}")
+             traceback.print_exc()
+             return # Stop if loading fails
+
+
+        print("\n--- Describing Data ---")
+        try:
+            describe_result = await client.call_tool(
+                "describe_data",
+                {"file_path": excel_file_path}
+            )
+            print(describe_result)
+        except ClientError as e:
+             print(f"ERROR during describe_data: {e}")
+             traceback.print_exc()
+             # Continue to plotting? Maybe not useful if describe failed.
+             # return
+        except Exception as e:
+             print(f"Unexpected ERROR during describe_data: {e}")
+             traceback.print_exc()
+             # Continue to plotting? Maybe not useful if describe failed.
+             # return
+
+        # ... (pivot table code - add similar try/except) ...
+        print("\n--- Creating Pivot Table (Sales by Region/Category) ---")
+        try:
+            pivot_result = await client.call_tool(
+                "create_pivot_table",
+                {
+                    "file_path": excel_file_path,
+                    "index_cols": ["Region"],
+                    "columns_cols": ["Category"],
+                    "values_cols": ["Sales"],
+                    "agg_func": "sum",
+                },
+            )
+            print(pivot_result)
+        except ClientError as e:
+             print(f"ERROR during create_pivot_table: {e}")
+             traceback.print_exc()
+        except Exception as e:
+             print(f"Unexpected ERROR during create_pivot_table: {e}")
+             traceback.print_exc()
+
+        print("\n--- Generating Plot (Sales vs Date) ---")
+        plot_result = None # Initialize plot_result
+        try:
+            plot_result = await client.call_tool(
+                "generate_plot",
+                {
+                    "file_path": excel_file_path,
+                    "x_col": "Date",
+                    "y_col": "Sales", # Ensure this column exists
+                    "plot_type": "line",
+                    "title": "Sales Over Time"
+                }
+            )
+            # --- Add Debug Prints ---
+            print(f"\nDEBUG: Raw plot_result = {plot_result}")
+            if plot_result:
+                 print(f"DEBUG: Type of plot_result[0] = {type(plot_result[0])}")
+                 if isinstance(plot_result[0], TextContent):
+                     print(f"DEBUG: Text content received = {plot_result[0].text}")
+            # --- End Debug Prints ---
+
+            # --- More Robust Check ---
+            # Check if result exists, is not empty, and the first item is ImageContent
+            if plot_result and len(plot_result) > 0 and isinstance(plot_result[0], ImageContent):
+                 img_data = base64.b64decode(plot_result[0].data)
+                 plot_filename = "sales_plot.png"
+                 with open(plot_filename, "wb") as f:
+                     f.write(img_data)
+                 print(f"Plot saved to {plot_filename}")
+            # --- Handle cases where it's not the expected image ---
+            elif plot_result and len(plot_result) > 0 and isinstance(plot_result[0], TextContent):
+                 print(f"Plotting tool returned text (likely an error message): {plot_result[0].text}")
+            else:
+                 # Covers empty list, None, or unexpected type
+                 print(f"Failed to generate plot or received unexpected result type: {plot_result}")
+
+        except ClientError as e:
+             print(f"ERROR calling generate_plot tool: {e}")
+             # Check if the error message gives clues about the server-side issue
+             # e.g., ClientError('ValueError: No data found for specified columns')
+             traceback.print_exc()
+        except Exception as e:
+             print(f"Unexpected ERROR during generate_plot call: {e}")
+             traceback.print_exc()
+        # --- End Plotting Section ---
+
+if __name__ == "__main__":
+    asyncio.run(main())
