@@ -3,38 +3,40 @@ import streamlit as st
 import asyncio
 import os
 import io
-import json # Import json
+import json
 from dotenv import load_dotenv
 import traceback
 
 # --- Environment and LLM Setup ---
 load_dotenv()
 
-# Check for Azure OpenAI credentials
+# Check for Azure OpenAI credentials (keep this check)
 if not all(os.getenv(var) for var in [
     "AZURE_OPENAI_ENDPOINT",
     "AZURE_OPENAI_API_KEY",
     "AZURE_OPENAI_API_VERSION",
     "AZURE_OPENAI_CHAT_DEPLOYMENT_NAME"
 ]):
-    st.error("Azure OpenAI environment variables not set. Please configure AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_API_VERSION, and AZURE_OPENAI_CHAT_DEPLOYMENT_NAME.")
+    st.error("Azure OpenAI environment variables not set.")
     st.stop()
 
 # Import LangChain and mcp-use components
 try:
     from langchain_openai import AzureChatOpenAI
+    # Use mcp_use.client directly now
     from mcp_use import MCPAgent, MCPClient
-    from mcp_use.exceptions import MCPConnectionError # Base error for connection issues
-    from mcp_use.client import MCPClientError # General client errors
+    # REMOVED specific MCPConnectionError import
+    # Instead, we'll catch broader errors or rely on general Exception
+    from mcp_use.client import MCPClientError # Import a general client error if available
     from mcp.types import TextContent # To check response type from direct call
-except ImportError:
-    st.error("Required libraries (streamlit, langchain-openai, mcp-use, python-dotenv, pandas, openpyxl, matplotlib, pillow) not found. Please install them.")
+except ImportError as e:
+    st.error(f"Required libraries not found. Please install them. Error: {e}")
     st.stop()
 
 # --- Configuration ---
 MCP_CONFIG_FILE = "excel_mcp_config.json" # Assumes config file is in the same directory
 MCP_SERVER_NAME = "excel_analyzer" # Must match the key in your excel_mcp_config.json
-UPLOADED_DATA_KEY_SERVER = "uploaded_data" # The key the server uses internally (optional for client)
+# UPLOADED_DATA_KEY_SERVER = "uploaded_data" # The key the server uses internally (optional for client)
 
 # --- Initialization (Cached) ---
 
@@ -80,7 +82,6 @@ def initialize_llm():
         return None
 
 # --- Agent Initialization ---
-# We initialize the agent only once needed and store in session state
 def get_agent():
     if "agent" not in st.session_state:
         client = st.session_state.mcp_client
@@ -90,9 +91,9 @@ def get_agent():
             st.session_state.agent = MCPAgent(
                 llm=llm,
                 client=client,
-                memory_enabled=True, # Important for chat context
+                memory_enabled=True,
                 max_steps=15,
-                verbose=True, # Set True for console debugging
+                verbose=True,
                 use_server_manager=False
             )
             print("MCPAgent created and stored in session state.")
@@ -118,27 +119,25 @@ if "data_loaded_on_server" not in st.session_state:
 # --- Helper Function to Call Load Tool ---
 async def call_load_tool_directly(client: MCPClient, file_name: str, file_content: bytes) -> tuple[bool, str | None]:
     """Calls the load_excel_content tool on the server directly."""
-    session = None # Initialize session to None
+    session = None
     try:
-        # Get or create the specific session for the excel server
         try:
             session = client.get_session(MCP_SERVER_NAME)
             print(f"DEBUG: Using existing session for '{MCP_SERVER_NAME}'.")
         except ValueError:
             print(f"DEBUG: Creating new session for '{MCP_SERVER_NAME}'.")
-            session = await client.create_session(MCP_SERVER_NAME, auto_initialize=True) # Ensure it's initialized
+            session = await client.create_session(MCP_SERVER_NAME, auto_initialize=True)
             print(f"DEBUG: New session created and initialized.")
 
         if not session:
-            raise MCPConnectionError(f"Could not get or create session for '{MCP_SERVER_NAME}'")
+             # This case might not be strictly necessary if create_session raises on failure, but good for safety
+             raise ConnectionError(f"Could not get or create session for '{MCP_SERVER_NAME}'")
 
         load_args = {
             "file_name": file_name,
             "file_content": file_content,
-            # sheet_name defaults to 0 on the server
         }
         print(f"DEBUG: Calling 'load_excel_content' tool with file_name: {file_name}")
-        # Note: session.call_tool returns CallToolResult, not just content
         load_result = await session.call_tool("load_excel_content", load_args)
         print(f"DEBUG: Raw result from 'load_excel_content': {load_result}")
 
@@ -149,9 +148,8 @@ async def call_load_tool_directly(client: MCPClient, file_name: str, file_conten
                     response_data = json.loads(content.text)
                     message = response_data.get("message", f"File '{file_name}' loaded successfully.")
                     print(f"DEBUG: Successfully parsed load response: {message}")
-                    # Store confirmation in session state
                     st.session_state.data_loaded_on_server = True
-                    st.session_state.uploaded_file_name = file_name # Track the loaded file name
+                    st.session_state.uploaded_file_name = file_name # Update the canonical loaded name
                     return True, message
                 except json.JSONDecodeError:
                      err_msg = "File loaded, but response from server was not valid JSON."
@@ -162,39 +160,36 @@ async def call_load_tool_directly(client: MCPClient, file_name: str, file_conten
                 print(f"WARN: {err_msg}")
                 return False, err_msg
         else:
-            # Handle MCP error result
             error_text = "Unknown error"
             if load_result and load_result.content and isinstance(load_result.content[0], TextContent):
                 error_text = load_result.content[0].text
             err_msg = f"MCP server returned error during load: {error_text}"
             print(f"ERROR: {err_msg}")
-            st.session_state.data_loaded_on_server = False # Ensure status is False on error
+            st.session_state.data_loaded_on_server = False
             return False, err_msg
 
-    except MCPConnectionError as e:
-        err_msg = f"Connection Error: Could not communicate with MCP server for loading. Details: {e}"
+    # --- CATCH BROADER ERRORS ---
+    # Catching ConnectionError for network/subprocess issues
+    # Catching MCPClientError if that's the intended general error from mcp-use client operations
+    # Catching base Exception as a fallback
+    except (ConnectionError, MCPClientError, Exception) as e:
+        err_type = type(e).__name__
+        err_msg = f"{err_type}: Could not communicate with MCP server for loading. Is it running? Details: {e}"
         print(f"ERROR: {err_msg}")
         traceback.print_exc()
         st.session_state.data_loaded_on_server = False
         return False, err_msg
-    except Exception as e:
-        err_msg = f"Unexpected error calling load tool: {type(e).__name__} - {e}"
-        print(f"ERROR: {err_msg}")
-        traceback.print_exc()
-        st.session_state.data_loaded_on_server = False
-        return False, err_msg
+    # --- END CATCH BROADER ERRORS ---
 
 # --- Streamlit App UI ---
 
 st.title("📊 Excel Analyzer Chat (Upload)")
 st.write("Upload an Excel file (.xlsx or .xls) and then ask the AI to load and analyze it.")
 
-# --- File Upload ---
+# File Uploader
 uploaded_file = st.file_uploader(
-    "Upload Excel File",
-    type=["xlsx", "xls"],
+    "Upload your Excel file (.xlsx or .xls)", type=["xlsx", "xls"],
     key="excel_uploader",
-    # Clear previous state if a new file is uploaded
     on_change=lambda: st.session_state.update(
         uploaded_file_name=None,
         uploaded_file_content=None,
@@ -203,10 +198,10 @@ uploaded_file = st.file_uploader(
 )
 
 # Store uploaded file content if a new file is uploaded
-if uploaded_file is not None and uploaded_file.name != st.session_state.uploaded_file_name:
+if uploaded_file is not None and uploaded_file.name != st.session_state.get("uploaded_file_name"):
      print(f"DEBUG: New file uploaded: {uploaded_file.name}")
-     st.session_state.uploaded_file_name = uploaded_file.name
-     st.session_state.uploaded_file_content = uploaded_file.getvalue()
+     st.session_state.uploaded_file_name = uploaded_file.name # Store only the name initially
+     st.session_state.uploaded_file_content = uploaded_file.getvalue() # Store the content
      st.session_state.data_loaded_on_server = False # Mark as not loaded on server yet
      st.info(f"File **'{uploaded_file.name}'** ready. Ask the chat to 'load the uploaded file'.")
 elif st.session_state.uploaded_file_name:
@@ -243,7 +238,6 @@ if prompt := st.chat_input("Ask about the uploaded Excel data..."):
         full_response = ""
 
         # --- Logic to handle load vs analysis ---
-        # Simple check: does the prompt ask to load the uploaded file?
         is_load_request = ("load" in prompt.lower() and "upload" in prompt.lower()) or \
                           ("use" in prompt.lower() and "upload" in prompt.lower())
 
@@ -253,7 +247,7 @@ if prompt := st.chat_input("Ask about the uploaded Excel data..."):
                 # Call the load tool directly using the helper
                 success, response_msg = asyncio.run(
                     call_load_tool_directly(
-                        st.session_state.mcp_client,
+                        st.session_state.mcp_client, # Pass the MCPClient instance
                         st.session_state.uploaded_file_name,
                         st.session_state.uploaded_file_content,
                     )
@@ -263,7 +257,7 @@ if prompt := st.chat_input("Ask about the uploaded Excel data..."):
                     message_placeholder.error(full_response)
                 else:
                     message_placeholder.markdown(full_response)
-                    # Add system note to history for LLM context
+                    # Add system note to history for LLM context AFTER successful load
                     st.session_state.messages.append({"role": "assistant", "content": f"System Note: Successfully loaded '{st.session_state.uploaded_file_name}'. You can now analyze it."})
             else:
                 full_response = "No file has been uploaded yet. Please upload a file first."
@@ -279,28 +273,33 @@ if prompt := st.chat_input("Ask about the uploaded Excel data..."):
             message_placeholder.markdown("Analyzing...")
             try:
                 # Add context about the loaded file for the agent
+                # IMPORTANT: Use the file name stored in session state *after* successful loading
                 contextual_prompt = f"Using the data from the loaded file identified as '{st.session_state.uploaded_file_name}', please {prompt}"
                 print(f"DEBUG: Running agent with contextual prompt: {contextual_prompt}")
 
                 # Run the agent asynchronously
-                response = await agent.run(query=contextual_prompt)
-                print(f"DEBUG: Agent response: {response}")
-                full_response = response
+                # Make sure agent initialization happened correctly before this point
+                if agent:
+                     response = await agent.run(query=contextual_prompt)
+                     print(f"DEBUG: Agent response: {response}")
+                     full_response = response
+                else:
+                     full_response = "Error: Agent is not available."
+                     print("ERROR: Agent was None when trying to run.")
+
+
                 message_placeholder.markdown(full_response)
 
-            except (MCPClientError, MCPConnectionError, Exception) as e:
+            except (MCPClientError, ConnectionError, Exception) as e: # Catch broader errors
                 error_msg = f"An error occurred during analysis: {type(e).__name__} - {e}"
                 message_placeholder.error(error_msg)
                 full_response = f"Error: {e}"
                 print(f"Error during agent run: {e}")
                 traceback.print_exc()
 
-        # Add the final response to chat history ONLY IF IT WASN'T A SYSTEM NOTE
-        # (or handle system notes differently if needed)
+        # Add the final response to chat history only if it's not a system note
         if not full_response.startswith("System Note:"):
              st.session_state.messages.append({"role": "assistant", "content": full_response})
 
 # --- Cleanup ---
-# Session cleanup is harder in Streamlit. The mcp_use client might need
-# explicit closing if the app were long-running in a different framework.
-# For Streamlit, rely on process termination or add a manual disconnect button.
+# Still tricky in Streamlit, best effort is process exit.
