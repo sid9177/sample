@@ -1,6 +1,6 @@
 # excel_analyzer.py
 import io
-from pathlib import Path
+from pathlib import Path # Keep for potential future use, but not for direct path input
 from typing import Any, Literal
 
 import matplotlib.pyplot as plt
@@ -11,106 +11,94 @@ from pydantic import Field
 from fastmcp import Context, FastMCP, Image
 
 # --- Server Setup ---
-
-# Create the FastMCP server instance
-# List dependencies required if installed via `fastmcp install`
 mcp = FastMCP(
     name="Excel Analyzer 📊",
     dependencies=["pandas", "openpyxl", "matplotlib", "pillow"],
-    instructions="Tools to load, analyze, pivot, and plot data from Excel files.",
+    instructions="Tools to load, analyze, pivot, and plot data from uploaded Excel file content.",
 )
 
-# In-memory storage for loaded DataFrames (Simple example, not suitable for production)
-# A dictionary mapping file paths (as strings) to pandas DataFrames
+# In-memory storage: maps filename -> DataFrame
 loaded_data: dict[str, pd.DataFrame] = {}
 
 # --- Helper Function ---
-
-def _get_loaded_df(file_path_str: str, ctx: Context | None = None) -> pd.DataFrame:
-    """Helper to get a loaded DataFrame, raising errors if not found."""
-    if file_path_str not in loaded_data:
-        msg = f"Excel file '{file_path_str}' has not been loaded yet. Use 'load_excel_data' first."
+def _get_loaded_df(file_name: str, ctx: Context | None = None) -> pd.DataFrame:
+    """Helper to get a loaded DataFrame by its original filename key."""
+    if file_name not in loaded_data:
+        msg = f"Data for file '{file_name}' has not been loaded yet. Please upload and use 'load_excel_data' first."
         if ctx:
              # Using await inside sync function is not allowed,
              # but this shows intent. Real implementation might need async.
              # await ctx.error(msg) # Ideally log error via context if available
              pass
-        raise ValueError(msg)
-    return loaded_data[file_path_str]
+        raise ValueError(msg) # Raise ValueError which MCPAgent should handle
+    return loaded_data[file_name]
 
-
-# --- MCP Tools ---
+# --- MCP Tools (Modified) ---
 
 @mcp.tool()
 async def load_excel_data(
-    file_path: str = Field(description="The full path to the Excel (.xlsx) file."),
+    file_name: str = Field(description="The original filename of the uploaded Excel file. Used as an identifier."),
+    file_content: bytes = Field(description="The raw byte content of the uploaded Excel file."),
     sheet_name: str | int | None = Field(
         default=0,
         description="The name or index of the sheet to load (0-based). Defaults to the first sheet.",
     ),
-    ctx: Context | None = None, # Context is optional here
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """
-    Loads data from a specified sheet in an Excel file into memory.
-    WARNING: Ensure the file_path points to a trusted file.
+    Loads data from the provided byte content of an Excel file into memory,
+    associating it with the original filename.
     """
-    resolved_path = Path(file_path).expanduser().resolve()
-    path_str = str(resolved_path)
-
-    # --- SECURITY WARNING ---
-    # In a real application, DO NOT accept arbitrary file paths.
-    # This is a major security risk. Use MCP roots or predefined, safe directories.
-    # For this example, we perform only basic checks.
-    if not resolved_path.exists():
-        raise FileNotFoundError(f"File not found: {resolved_path}")
-    if not resolved_path.is_file() or not resolved_path.suffix.lower() in [".xlsx", ".xls"]:
-         raise ValueError(f"Path must be an Excel file (.xlsx, .xls): {resolved_path}")
-    # --- END SECURITY WARNING ---
+    if not file_name:
+        raise ValueError("file_name cannot be empty.")
+    if not file_content:
+        raise ValueError("file_content cannot be empty.")
 
     try:
-        df = pd.read_excel(resolved_path, sheet_name=sheet_name)
-        loaded_data[path_str] = df  # Store the DataFrame
+        # Load DataFrame from bytes
+        df = pd.read_excel(io.BytesIO(file_content), sheet_name=sheet_name)
+        loaded_data[file_name] = df  # Store using the filename as key
+
         if ctx:
-            await ctx.info(f"Loaded {df.shape[0]} rows, {df.shape[1]} columns from '{resolved_path}' sheet '{sheet_name}'.")
+            await ctx.info(f"Loaded {df.shape[0]} rows, {df.shape[1]} columns from uploaded file '{file_name}' sheet '{sheet_name}'.")
 
         return {
-            "message": f"Successfully loaded data from '{resolved_path}' (sheet: {sheet_name}).",
-            "file_path": path_str,
+            "message": f"Successfully loaded data from uploaded file '{file_name}' (sheet: {sheet_name}). Use this filename for other tools.",
+            "file_name": file_name, # Return the identifier
             "columns": list(df.columns),
             "rows": df.shape[0],
         }
     except Exception as e:
         if ctx:
-            await ctx.error(f"Failed to load Excel file '{resolved_path}': {e}")
+            await ctx.error(f"Failed to load Excel content for '{file_name}': {e}")
         # Reraise to send error back to client
-        raise ValueError(f"Error loading Excel file: {e}")
+        raise ValueError(f"Error loading Excel content for '{file_name}': {e}")
 
 
 @mcp.tool()
 async def describe_data(
-    file_path: str = Field(description="Path to the previously loaded Excel file."),
+    file_name: str = Field(description="Filename identifier of the previously loaded Excel data."),
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """
-    Provides descriptive statistics for the numerical columns of a loaded Excel file.
+    Provides descriptive statistics for the numerical columns of previously loaded Excel data.
     """
     try:
-        df = _get_loaded_df(file_path, ctx)
+        df = _get_loaded_df(file_name, ctx) # Use file_name as the key
         description = df.describe().to_dict()
         if ctx:
-            await ctx.info(f"Generated description for '{file_path}'.")
-        # Convert numpy types if necessary for JSON serialization
+            await ctx.info(f"Generated description for data '{file_name}'.")
         description_serializable = pd.DataFrame(description).to_dict()
         return description_serializable
     except Exception as e:
         if ctx:
-             await ctx.error(f"Error describing data for '{file_path}': {e}")
-        raise ValueError(f"Error describing data: {e}")
+             await ctx.error(f"Error describing data for '{file_name}': {e}")
+        raise ValueError(f"Error describing data for '{file_name}': {e}")
 
 
 @mcp.tool()
 async def create_pivot_table(
-    file_path: str = Field(description="Path to the previously loaded Excel file."),
+    file_name: str = Field(description="Filename identifier of the previously loaded Excel data."),
     index_cols: list[str] = Field(description="Column(s) to use as the pivot table index."),
     values_cols: list[str] = Field(description="Column(s) to aggregate."),
     columns_cols: list[str] | None = Field(
@@ -122,26 +110,25 @@ async def create_pivot_table(
     ctx: Context | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Creates a pivot table from the loaded data.
+    Creates a pivot table from previously loaded Excel data.
     """
     try:
-        df = _get_loaded_df(file_path, ctx)
+        df = _get_loaded_df(file_name, ctx) # Use file_name as the key
         pivot = pd.pivot_table(
             df, index=index_cols, columns=columns_cols, values=values_cols, aggfunc=agg_func
         )
         if ctx:
-            await ctx.info(f"Created pivot table for '{file_path}'.")
-        # Convert to list of records for easier JSON handling
+            await ctx.info(f"Created pivot table for data '{file_name}'.")
         return pivot.reset_index().to_dict(orient="records")
     except Exception as e:
         if ctx:
-            await ctx.error(f"Error creating pivot table for '{file_path}': {e}")
-        raise ValueError(f"Error creating pivot table: {e}")
+            await ctx.error(f"Error creating pivot table for data '{file_name}': {e}")
+        raise ValueError(f"Error creating pivot table for '{file_name}': {e}")
 
 
 @mcp.tool()
 async def generate_plot(
-    file_path: str = Field(description="Path to the previously loaded Excel file."),
+    file_name: str = Field(description="Filename identifier of the previously loaded Excel data."),
     x_col: str = Field(description="Column to use for the X-axis."),
     y_col: str | list[str] = Field(description="Column(s) to use for the Y-axis."),
     plot_type: Literal["line", "bar", "scatter", "hist"] = Field(
@@ -151,14 +138,14 @@ async def generate_plot(
     ctx: Context | None = None,
 ) -> Image:
     """
-    Generates a plot from the loaded data and returns it as an image.
+    Generates a plot from previously loaded Excel data and returns it as an image.
     Supports line, bar, scatter, and histogram plots.
     For histograms, only 'x_col' is used.
     """
     try:
-        df = _get_loaded_df(file_path, ctx)
+        df = _get_loaded_df(file_name, ctx) # Use file_name as the key
 
-        plt.figure()  # Create a new figure for each plot
+        plt.figure()
 
         if plot_type == "line":
             df.plot(x=x_col, y=y_col, kind='line')
@@ -166,21 +153,20 @@ async def generate_plot(
             df.plot(x=x_col, y=y_col, kind='bar')
         elif plot_type == "scatter":
             if isinstance(y_col, list) and len(y_col) == 1:
-                y_col_plot = y_col[0] # Scatter needs single y column
+                y_col_plot = y_col[0]
             elif isinstance(y_col, str):
                  y_col_plot = y_col
             else:
                  raise ValueError("Scatter plot requires exactly one Y column.")
             df.plot(x=x_col, y=y_col_plot, kind='scatter')
         elif plot_type == "hist":
-            df[x_col].plot(kind='hist') # Histogram uses only one column
+            df[x_col].plot(kind='hist')
         else:
             raise ValueError(f"Unsupported plot type: {plot_type}")
 
         if title:
             plt.title(title)
         else:
-            # Default title generation
             y_cols_str = y_col if isinstance(y_col, str) else ", ".join(y_col)
             plt.title(f"{plot_type.capitalize()} Plot: {y_cols_str} vs {x_col}" if plot_type != 'hist' else f"Histogram of {x_col}")
 
@@ -191,30 +177,25 @@ async def generate_plot(
 
         plt.tight_layout()
 
-        # Save plot to a bytes buffer
         buf = io.BytesIO()
         plt.savefig(buf, format="png")
         buf.seek(0)
         img_bytes = buf.getvalue()
         buf.close()
         if ctx:
-            await ctx.info(f"Generated {plot_type} plot for '{file_path}'.")
+            await ctx.info(f"Generated {plot_type} plot for data '{file_name}'.")
 
         return Image(data=img_bytes, format="png")
 
     except Exception as e:
         if ctx:
-             await ctx.error(f"Error generating plot for '{file_path}': {e}")
-        raise ValueError(f"Error generating plot: {e}")
+             await ctx.error(f"Error generating plot for data '{file_name}': {e}")
+        raise ValueError(f"Error generating plot for '{file_name}': {e}")
     finally:
-        plt.close()  # Close the plot to free memory
-
+        plt.close()
 
 # --- Run the Server ---
 
 if __name__ == "__main__":
-    print("Starting Excel Analyzer MCP Server...")
-    print("WARNING: This server accepts arbitrary file paths for loading.")
-    print("         In a production environment, restrict file access severely.")
-    # Running with default stdio transport
+    print("Starting Excel Analyzer MCP Server (Upload Mode)...")
     mcp.run()
